@@ -87,6 +87,10 @@ impl<T> BinarySearchTree<T> {
     pub fn new() -> Self {
         Self { root: None }
     }
+
+    pub fn root(&self) -> Option<BstNodeHandle<T>> {
+        self.root.clone().map(BstNodeHandle::from)
+    }
 }
 
 impl<T: Ord> BinarySearchTree<T> {
@@ -161,8 +165,7 @@ impl<T: Ord> BinarySearchTree<T> {
             let parent_right = parent_rc.borrow().right.clone();
             if parent_right
                 .as_ref()
-                .map(|r| Rc::ptr_eq(r, &current))
-                .unwrap_or(false)
+                .is_some_and(|r| Rc::ptr_eq(r, &current))
             {
                 return Some(BstNodeHandle::from(parent_rc));
             }
@@ -185,8 +188,7 @@ impl<T: Ord> BinarySearchTree<T> {
             let parent_left = parent_rc.borrow().left.clone();
             if parent_left
                 .as_ref()
-                .map(|l| Rc::ptr_eq(l, &current))
-                .unwrap_or(false)
+                .is_some_and(|l| Rc::ptr_eq(l, &current))
             {
                 return Some(BstNodeHandle::from(parent_rc));
             }
@@ -246,8 +248,7 @@ impl<T: Ord> BinarySearchTree<T> {
                 .borrow()
                 .left
                 .as_ref()
-                .map(|l| Rc::ptr_eq(l, target))
-                .unwrap_or(false);
+                .is_some_and(|l| Rc::ptr_eq(l, target));
 
             if is_left_child {
                 target_parent_rc.borrow_mut().left = replacement.clone();
