@@ -1,0 +1,7 @@
+[package]
+name = "exercises"
+edition = "2024"
+default-run = "exercises"
+
+[dependencies]
+ads = { path = "../ads" }
