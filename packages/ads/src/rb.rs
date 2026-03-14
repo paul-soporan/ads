@@ -13,6 +13,8 @@ pub enum NodeColor {
 struct RbNode<T> {
     value: T,
     color: NodeColor,
+    /// Number of nodes in this subtree (including self).
+    size: usize,
 
     left: Option<Rc<RefCell<RbNode<T>>>>,
     right: Option<Rc<RefCell<RbNode<T>>>>,
@@ -25,6 +27,7 @@ impl<T> RbNode<T> {
         Self {
             value,
             color: NodeColor::Red,
+            size: 1,
             left: None,
             right: None,
             parent: None,
@@ -219,6 +222,24 @@ impl<T: Ord> RedBlackTree<T> {
         self.search(value).and_then(|h| self.successor(&h))
     }
 
+    fn subtree_size(node: &Option<Rc<RefCell<RbNode<T>>>>) -> usize {
+        node.as_ref().map_or(0, |rc| rc.borrow().size)
+    }
+
+    fn update_size(rc: &Rc<RefCell<RbNode<T>>>) {
+        let left_size = rc.borrow().left.as_ref().map_or(0, |l| l.borrow().size);
+        let right_size = rc.borrow().right.as_ref().map_or(0, |r| r.borrow().size);
+        rc.borrow_mut().size = 1 + left_size + right_size;
+    }
+
+    fn recompute_sizes_up(mut node: Option<Rc<RefCell<RbNode<T>>>>) {
+        while let Some(rc) = node {
+            Self::update_size(&rc);
+            let next = rc.borrow().parent.as_ref().and_then(|w| w.upgrade());
+            node = next;
+        }
+    }
+
     fn left_rotate(&mut self, x: &Rc<RefCell<RbNode<T>>>) {
         let y = x
             .borrow()
@@ -249,6 +270,9 @@ impl<T: Ord> RedBlackTree<T> {
 
         y.borrow_mut().left = Some(x.clone());
         x.borrow_mut().parent = Some(Rc::downgrade(&y));
+
+        Self::update_size(x);
+        Self::update_size(&y);
     }
 
     fn right_rotate(&mut self, x: &Rc<RefCell<RbNode<T>>>) {
@@ -281,6 +305,9 @@ impl<T: Ord> RedBlackTree<T> {
 
         y.borrow_mut().right = Some(x.clone());
         x.borrow_mut().parent = Some(Rc::downgrade(&y));
+
+        Self::update_size(x);
+        Self::update_size(&y);
     }
 
     pub fn insert(&mut self, value: T) {
@@ -302,11 +329,19 @@ impl<T: Ord> RedBlackTree<T> {
         if let Some(parent_rc) = parent {
             new_node.borrow_mut().parent = Some(Rc::downgrade(&parent_rc));
 
-            let mut parent_borrow = parent_rc.borrow_mut();
-            if new_node.borrow().value < parent_borrow.value {
-                parent_borrow.left = Some(new_node.clone());
-            } else {
-                parent_borrow.right = Some(new_node.clone());
+            {
+                let mut parent_borrow = parent_rc.borrow_mut();
+                if new_node.borrow().value < parent_borrow.value {
+                    parent_borrow.left = Some(new_node.clone());
+                } else {
+                    parent_borrow.right = Some(new_node.clone());
+                }
+            }
+
+            let mut ancestor: Option<Rc<RefCell<RbNode<T>>>> = Some(parent_rc);
+            while let Some(rc) = ancestor {
+                rc.borrow_mut().size += 1;
+                ancestor = rc.borrow().parent.as_ref().and_then(|w| w.upgrade());
             }
         } else {
             self.root = Some(new_node.clone());
@@ -458,7 +493,7 @@ impl<T: Ord> RedBlackTree<T> {
             let y = Self::leftmost(right_child.clone());
             y_original_color = y.borrow().color;
 
-            x = y.borrow_mut().right.take();
+            x = y.borrow().right.clone();
 
             if Rc::ptr_eq(&y, &right_child) {
                 x_parent = Some(y.clone());
@@ -477,6 +512,8 @@ impl<T: Ord> RedBlackTree<T> {
             }
             y.borrow_mut().color = z.borrow().color;
         }
+
+        Self::recompute_sizes_up(x_parent.clone());
 
         if y_original_color == NodeColor::Black {
             self.delete_fixup(x, x_parent);
@@ -608,6 +645,32 @@ impl<T: Ord> RedBlackTree<T> {
 
     pub fn delete_value(&mut self, value: &T) -> Option<T> {
         self.search(value).and_then(|h| self.delete(h))
+    }
+
+    pub fn size(&self) -> usize {
+        Self::subtree_size(&self.root)
+    }
+
+    pub fn select(&self, rank: usize) -> Option<RbNodeHandle<T>> {
+        let mut current = self.root.clone()?;
+        let mut k = rank;
+        loop {
+            let left_size = current
+                .borrow()
+                .left
+                .as_ref()
+                .map_or(0, |l| l.borrow().size);
+            if k < left_size {
+                let left = current.borrow().left.clone()?;
+                current = left;
+            } else if k == left_size {
+                return Some(RbNodeHandle::from(current));
+            } else {
+                k -= left_size + 1;
+                let right = current.borrow().right.clone()?;
+                current = right;
+            }
+        }
     }
 }
 
