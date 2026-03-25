@@ -36,17 +36,17 @@ impl<T> RbNode<T> {
 }
 
 #[derive(Debug)]
-pub struct RbNodeHandle<T> {
+pub struct RbNodeView<T> {
     node: Rc<RefCell<RbNode<T>>>,
 }
 
-impl<T> From<Rc<RefCell<RbNode<T>>>> for RbNodeHandle<T> {
+impl<T> From<Rc<RefCell<RbNode<T>>>> for RbNodeView<T> {
     fn from(node: Rc<RefCell<RbNode<T>>>) -> Self {
-        RbNodeHandle { node }
+        RbNodeView { node }
     }
 }
 
-impl<T> RbNodeHandle<T> {
+impl<T> RbNodeView<T> {
     fn rc(&self) -> Rc<RefCell<RbNode<T>>> {
         self.node.clone()
     }
@@ -63,33 +63,29 @@ impl<T> RbNodeHandle<T> {
         self.node.borrow().color
     }
 
-    pub fn left(&self) -> Option<RbNodeHandle<T>> {
-        self.node
-            .borrow()
-            .left
-            .as_ref()
-            .map(|left_rc| RbNodeHandle {
-                node: left_rc.clone(),
-            })
+    pub fn left(&self) -> Option<RbNodeView<T>> {
+        self.node.borrow().left.as_ref().map(|left_rc| RbNodeView {
+            node: left_rc.clone(),
+        })
     }
 
-    pub fn right(&self) -> Option<RbNodeHandle<T>> {
+    pub fn right(&self) -> Option<RbNodeView<T>> {
         self.node
             .borrow()
             .right
             .as_ref()
-            .map(|right_rc| RbNodeHandle {
+            .map(|right_rc| RbNodeView {
                 node: right_rc.clone(),
             })
     }
 
-    pub fn parent(&self) -> Option<RbNodeHandle<T>> {
+    pub fn parent(&self) -> Option<RbNodeView<T>> {
         self.node
             .borrow()
             .parent
             .as_ref()
             .and_then(|weak_parent| weak_parent.upgrade())
-            .map(|parent_rc| RbNodeHandle { node: parent_rc })
+            .map(|parent_rc| RbNodeView { node: parent_rc })
     }
 }
 
@@ -105,8 +101,8 @@ impl<T> RedBlackTree<T> {
 }
 
 impl<T: Ord> RedBlackTree<T> {
-    pub fn root(&self) -> Option<RbNodeHandle<T>> {
-        self.root.clone().map(RbNodeHandle::from)
+    pub fn root(&self) -> Option<RbNodeView<T>> {
+        self.root.clone().map(RbNodeView::from)
     }
 
     fn leftmost(rc: Rc<RefCell<RbNode<T>>>) -> Rc<RefCell<RbNode<T>>> {
@@ -131,13 +127,13 @@ impl<T: Ord> RedBlackTree<T> {
         }
     }
 
-    pub fn search(&self, value: &T) -> Option<RbNodeHandle<T>> {
+    pub fn search(&self, value: &T) -> Option<RbNodeView<T>> {
         let mut current = self.root.clone();
 
         while let Some(current_rc) = current {
             let current_borrow = current_rc.borrow();
             if value == &current_borrow.value {
-                return Some(RbNodeHandle::from(current_rc.clone()));
+                return Some(RbNodeView::from(current_rc.clone()));
             }
 
             current = if value < &current_borrow.value {
@@ -154,23 +150,23 @@ impl<T: Ord> RedBlackTree<T> {
         self.search(value).is_some()
     }
 
-    pub fn min(&self) -> Option<RbNodeHandle<T>> {
+    pub fn min(&self) -> Option<RbNodeView<T>> {
         self.root
             .clone()
-            .map(|root_rc| RbNodeHandle::from(Self::leftmost(root_rc)))
+            .map(|root_rc| RbNodeView::from(Self::leftmost(root_rc)))
     }
 
-    pub fn max(&self) -> Option<RbNodeHandle<T>> {
+    pub fn max(&self) -> Option<RbNodeView<T>> {
         self.root
             .clone()
-            .map(|root_rc| RbNodeHandle::from(Self::rightmost(root_rc)))
+            .map(|root_rc| RbNodeView::from(Self::rightmost(root_rc)))
     }
 
-    pub fn predecessor(&self, handle: &RbNodeHandle<T>) -> Option<RbNodeHandle<T>> {
+    pub fn predecessor(&self, handle: &RbNodeView<T>) -> Option<RbNodeView<T>> {
         let mut current = handle.rc();
 
         if let Some(left_rc) = &current.borrow().left {
-            return Some(RbNodeHandle::from(Self::rightmost(left_rc.clone())));
+            return Some(RbNodeView::from(Self::rightmost(left_rc.clone())));
         }
 
         loop {
@@ -183,18 +179,18 @@ impl<T: Ord> RedBlackTree<T> {
                 .map(|r| Rc::ptr_eq(r, &current))
                 .unwrap_or(false)
             {
-                return Some(RbNodeHandle::from(parent_rc));
+                return Some(RbNodeView::from(parent_rc));
             }
 
             current = parent_rc;
         }
     }
 
-    pub fn successor(&self, handle: &RbNodeHandle<T>) -> Option<RbNodeHandle<T>> {
+    pub fn successor(&self, handle: &RbNodeView<T>) -> Option<RbNodeView<T>> {
         let mut current = handle.rc();
 
         if let Some(right_rc) = &current.borrow().right {
-            return Some(RbNodeHandle::from(Self::leftmost(right_rc.clone())));
+            return Some(RbNodeView::from(Self::leftmost(right_rc.clone())));
         }
 
         loop {
@@ -207,18 +203,18 @@ impl<T: Ord> RedBlackTree<T> {
                 .map(|l| Rc::ptr_eq(l, &current))
                 .unwrap_or(false)
             {
-                return Some(RbNodeHandle::from(parent_rc));
+                return Some(RbNodeView::from(parent_rc));
             }
 
             current = parent_rc;
         }
     }
 
-    pub fn predecessor_of_value(&self, value: &T) -> Option<RbNodeHandle<T>> {
+    pub fn predecessor_of_value(&self, value: &T) -> Option<RbNodeView<T>> {
         self.search(value).and_then(|h| self.predecessor(&h))
     }
 
-    pub fn successor_of_value(&self, value: &T) -> Option<RbNodeHandle<T>> {
+    pub fn successor_of_value(&self, value: &T) -> Option<RbNodeView<T>> {
         self.search(value).and_then(|h| self.successor(&h))
     }
 
@@ -471,7 +467,7 @@ impl<T: Ord> RedBlackTree<T> {
         }
     }
 
-    pub fn delete(&mut self, handle: RbNodeHandle<T>) -> Option<T> {
+    pub fn delete(&mut self, handle: RbNodeView<T>) -> Option<T> {
         let z = handle.into_inner();
 
         let y_original_color;
@@ -651,7 +647,7 @@ impl<T: Ord> RedBlackTree<T> {
         Self::subtree_size(&self.root)
     }
 
-    pub fn select(&self, rank: usize) -> Option<RbNodeHandle<T>> {
+    pub fn select(&self, rank: usize) -> Option<RbNodeView<T>> {
         let mut current = self.root.clone()?;
         let mut k = rank;
         loop {
@@ -664,7 +660,7 @@ impl<T: Ord> RedBlackTree<T> {
                 let left = current.borrow().left.clone()?;
                 current = left;
             } else if k == left_size {
-                return Some(RbNodeHandle::from(current));
+                return Some(RbNodeView::from(current));
             } else {
                 k -= left_size + 1;
                 let right = current.borrow().right.clone()?;

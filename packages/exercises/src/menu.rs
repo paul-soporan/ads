@@ -4,8 +4,12 @@ pub const MAIN_MENU_ITEMS: [&str; 4] = [
     "Applications",
     "Exit",
 ];
-pub const DATA_STRUCTURE_ITEMS: [&str; 3] =
-    ["Binary Search Tree (BST)", "Red-Black Tree", "Go Back"];
+pub const DATA_STRUCTURE_ITEMS: [&str; 4] = [
+    "Binary Search Tree (BST)",
+    "Red-Black Tree",
+    "B-Tree (order 2)",
+    "Go Back",
+];
 pub const APPLICATION_ITEMS: [&str; 3] = [
     "Dynamic Leaderboard",
     "Dynamic Median of a Data Stream",

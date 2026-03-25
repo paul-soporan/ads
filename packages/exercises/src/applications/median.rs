@@ -4,7 +4,6 @@ use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 use crate::render::render_rb_tree_text;
 use crate::types::StatusMessage;
 
-
 pub enum MedianCommand {
     Add(i32),
     Remove(i32),
@@ -41,7 +40,6 @@ impl MedianCommand {
         }
     }
 }
-
 
 pub struct MedianStreamState {
     pub tree: RedBlackTree<i32>,

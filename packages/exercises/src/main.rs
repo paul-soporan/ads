@@ -1,5 +1,5 @@
 mod app;
-mod apps;
+mod applications;
 mod interactive;
 mod menu;
 mod render;

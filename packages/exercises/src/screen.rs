@@ -1,4 +1,4 @@
-use crate::apps::{LeaderboardState, MedianStreamState};
+use crate::applications::{LeaderboardState, MedianStreamState};
 use crate::interactive::InteractiveState;
 use crate::menu::MenuState;
 use crate::showcase::ShowcaseState;
@@ -32,7 +32,7 @@ impl Screen {
         match self {
             Self::MainMenu(_) => "↑/↓ move • Enter select • 1-4 shortcuts • q quit",
             Self::ShowcaseMenu(_) | Self::InteractiveMenu(_) => {
-                "↑/↓ move • Enter select • 1-3 shortcuts • Esc back • q quit"
+                "↑/↓ move • Enter select • 1-4 shortcuts • Esc back • q quit"
             }
             Self::ApplicationsMenu(_) => {
                 "↑/↓ move • Enter select • 1-3 shortcuts • Esc back • q quit"

@@ -25,6 +25,7 @@ impl Op {
 pub enum TreeKind {
     Bst,
     Rb,
+    BTree,
 }
 
 #[derive(Clone, Copy)]

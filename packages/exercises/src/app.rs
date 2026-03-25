@@ -8,7 +8,7 @@ use ratatui::{
 };
 use std::{io, time::Duration};
 
-use crate::apps::{LeaderboardState, MedianStreamState};
+use crate::applications::{LeaderboardState, MedianStreamState};
 use crate::interactive::{InteractiveState, PromptState};
 use crate::menu::{
     APPLICATION_ITEMS, DATA_STRUCTURE_ITEMS, INTERACTIVE_ACTIONS, MAIN_MENU_ITEMS, MenuState,
@@ -445,6 +445,7 @@ impl App {
                     next_screen = Some(match menu.selected {
                         0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
                         1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
+                        2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
                         _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                     });
                 }
@@ -454,6 +455,7 @@ impl App {
                         next_screen = Some(match selection {
                             0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
                             1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
+                            2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
                             _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                         });
                     }
@@ -470,6 +472,7 @@ impl App {
                     next_screen = Some(match menu.selected {
                         0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
                         1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
+                        2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
                         _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                     });
                 }
@@ -479,6 +482,7 @@ impl App {
                         next_screen = Some(match selection {
                             0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
                             1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
+                            2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
                             _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                         });
                     }

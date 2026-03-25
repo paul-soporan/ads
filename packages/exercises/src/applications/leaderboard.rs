@@ -9,7 +9,6 @@ use std::{
 use crate::render::render_rb_tree_text_generic;
 use crate::types::StatusMessage;
 
-
 #[derive(Clone, Eq, PartialEq)]
 pub struct LeaderboardEntry {
     pub player: String,
@@ -35,7 +34,6 @@ impl PartialOrd for LeaderboardEntry {
         Some(self.cmp(other))
     }
 }
-
 
 pub enum LeaderboardCommand {
     Add { player: String, score: i32 },
@@ -100,7 +98,6 @@ impl LeaderboardCommand {
         }
     }
 }
-
 
 pub struct LeaderboardState {
     pub tree: RedBlackTree<LeaderboardEntry>,

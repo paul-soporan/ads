@@ -1,9 +1,10 @@
-use ads::{BinarySearchTree, RedBlackTree};
+use ads::{BTree, BinarySearchTree, RedBlackTree};
 use ratatui::prelude::{Line, Text};
 
 use crate::menu::INTERACTIVE_ACTIONS;
 use crate::render::{
-    bst_depth, rb_black_height, rb_depth, render_bst_tree_text, render_rb_tree_text,
+    bst_depth, btree_depth, btree_key_count, rb_black_height, rb_depth, render_bst_tree_text,
+    render_btree_text, render_rb_tree_text,
 };
 use crate::types::{InputAction, StatusMessage, TreeKind};
 use crate::utils::format_option;
@@ -22,6 +23,7 @@ impl PromptState {
             title: match tree_kind {
                 TreeKind::Bst => format!("BST · {title}"),
                 TreeKind::Rb => format!("Red-Black Tree · {title}"),
+                TreeKind::BTree => format!("B-Tree · {title}"),
             },
             hint: hint.to_string(),
             buffer: String::new(),
@@ -32,6 +34,7 @@ impl PromptState {
 pub enum InteractiveTree {
     Bst(BinarySearchTree<i32>),
     Rb(RedBlackTree<i32>),
+    BTree(BTree<i32>),
 }
 
 impl InteractiveTree {
@@ -39,6 +42,7 @@ impl InteractiveTree {
         match kind {
             TreeKind::Bst => Self::Bst(BinarySearchTree::new()),
             TreeKind::Rb => Self::Rb(RedBlackTree::new()),
+            TreeKind::BTree => Self::BTree(BTree::new(2)),
         }
     }
 
@@ -46,6 +50,7 @@ impl InteractiveTree {
         match self {
             Self::Bst(_) => TreeKind::Bst,
             Self::Rb(_) => TreeKind::Rb,
+            Self::BTree(_) => TreeKind::BTree,
         }
     }
 
@@ -53,6 +58,7 @@ impl InteractiveTree {
         match self {
             Self::Bst(_) => "Binary Search Tree",
             Self::Rb(_) => "Red-Black Tree",
+            Self::BTree(_) => "B-Tree (t = 2, internal=yellow, leaf=cyan)",
         }
     }
 
@@ -60,6 +66,7 @@ impl InteractiveTree {
         match self {
             Self::Bst(_) => "BST Interactive",
             Self::Rb(_) => "Red-Black Interactive",
+            Self::BTree(_) => "B-Tree Interactive",
         }
     }
 
@@ -67,6 +74,7 @@ impl InteractiveTree {
         match self {
             Self::Bst(tree) => render_bst_tree_text(tree),
             Self::Rb(tree) => render_rb_tree_text(tree),
+            Self::BTree(tree) => render_btree_text(tree),
         }
     }
 
@@ -77,6 +85,10 @@ impl InteractiveTree {
                 tree.max().map(|handle| *handle.value()),
             ),
             Self::Rb(tree) => (
+                tree.min().map(|handle| *handle.value()),
+                tree.max().map(|handle| *handle.value()),
+            ),
+            Self::BTree(tree) => (
                 tree.min().map(|handle| *handle.value()),
                 tree.max().map(|handle| *handle.value()),
             ),
@@ -112,6 +124,17 @@ impl InteractiveTree {
                     Line::from(format!("Max: {}", format_option(max_value))),
                 ])
             }
+            Self::BTree(tree) => {
+                let root_view = tree.root_view();
+                let (min_value, max_value) = self.min_max();
+                Text::from(vec![
+                    Line::from(format!("Degree (t): {}", tree.degree())),
+                    Line::from(format!("Height: {}", btree_depth(&root_view))),
+                    Line::from(format!("Total keys: {}", btree_key_count(&root_view))),
+                    Line::from(format!("Min: {}", format_option(min_value))),
+                    Line::from(format!("Max: {}", format_option(max_value))),
+                ])
+            }
         }
     }
 
@@ -125,6 +148,10 @@ impl InteractiveTree {
                 tree.insert(value);
                 StatusMessage::success(format!("Inserted {value} into the red-black tree."))
             }
+            (Self::BTree(tree), InputAction::Insert) => {
+                tree.insert(value);
+                StatusMessage::success(format!("Inserted {value} into the B-Tree."))
+            }
             (Self::Bst(tree), InputAction::Delete) => match tree.delete_value(&value) {
                 Some(deleted) => StatusMessage::success(format!("Deleted {deleted} from the BST.")),
                 None => StatusMessage::error(format!("Value {value} was not found in the BST.")),
@@ -136,6 +163,12 @@ impl InteractiveTree {
                 None => StatusMessage::error(format!(
                     "Value {value} was not found in the red-black tree."
                 )),
+            },
+            (Self::BTree(tree), InputAction::Delete) => match tree.delete_value(&value) {
+                Some(deleted) => {
+                    StatusMessage::success(format!("Deleted {deleted} from the B-Tree."))
+                }
+                None => StatusMessage::error(format!("Value {value} was not found in the B-Tree.")),
             },
             (Self::Bst(tree), InputAction::Search) => {
                 if tree.contains(&value) {
@@ -153,6 +186,13 @@ impl InteractiveTree {
                     ))
                 }
             }
+            (Self::BTree(tree), InputAction::Search) => {
+                if tree.contains(&value) {
+                    StatusMessage::success(format!("Value {value} exists in the B-Tree."))
+                } else {
+                    StatusMessage::error(format!("Value {value} does not exist in the B-Tree."))
+                }
+            }
             (Self::Bst(tree), InputAction::PredSucc) => {
                 let predecessor = tree
                     .predecessor_of_value(&value)
@@ -167,6 +207,19 @@ impl InteractiveTree {
                 ))
             }
             (Self::Rb(tree), InputAction::PredSucc) => {
+                let predecessor = tree
+                    .predecessor_of_value(&value)
+                    .map(|handle| *handle.value());
+                let successor = tree
+                    .successor_of_value(&value)
+                    .map(|handle| *handle.value());
+                StatusMessage::info(format!(
+                    "Predecessor: {} • Successor: {}",
+                    format_option(predecessor),
+                    format_option(successor)
+                ))
+            }
+            (Self::BTree(tree), InputAction::PredSucc) => {
                 let predecessor = tree
                     .predecessor_of_value(&value)
                     .map(|handle| *handle.value());

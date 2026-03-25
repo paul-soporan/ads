@@ -25,17 +25,17 @@ impl<T> BstNode<T> {
 }
 
 #[derive(Debug)]
-pub struct BstNodeHandle<T> {
+pub struct BstNodeView<T> {
     node: Rc<RefCell<BstNode<T>>>,
 }
 
-impl<T> From<Rc<RefCell<BstNode<T>>>> for BstNodeHandle<T> {
+impl<T> From<Rc<RefCell<BstNode<T>>>> for BstNodeView<T> {
     fn from(node: Rc<RefCell<BstNode<T>>>) -> Self {
-        BstNodeHandle { node }
+        BstNodeView { node }
     }
 }
 
-impl<T> BstNodeHandle<T> {
+impl<T> BstNodeView<T> {
     fn rc(&self) -> Rc<RefCell<BstNode<T>>> {
         self.node.clone()
     }
@@ -48,33 +48,29 @@ impl<T> BstNodeHandle<T> {
         Ref::map(self.node.borrow(), |node| &node.value)
     }
 
-    pub fn left(&self) -> Option<BstNodeHandle<T>> {
-        self.node
-            .borrow()
-            .left
-            .as_ref()
-            .map(|left_rc| BstNodeHandle {
-                node: left_rc.clone(),
-            })
+    pub fn left(&self) -> Option<BstNodeView<T>> {
+        self.node.borrow().left.as_ref().map(|left_rc| BstNodeView {
+            node: left_rc.clone(),
+        })
     }
 
-    pub fn right(&self) -> Option<BstNodeHandle<T>> {
+    pub fn right(&self) -> Option<BstNodeView<T>> {
         self.node
             .borrow()
             .right
             .as_ref()
-            .map(|right_rc| BstNodeHandle {
+            .map(|right_rc| BstNodeView {
                 node: right_rc.clone(),
             })
     }
 
-    pub fn parent(&self) -> Option<BstNodeHandle<T>> {
+    pub fn parent(&self) -> Option<BstNodeView<T>> {
         self.node
             .borrow()
             .parent
             .as_ref()
             .and_then(|weak_parent| weak_parent.upgrade())
-            .map(|parent_rc| BstNodeHandle { node: parent_rc })
+            .map(|parent_rc| BstNodeView { node: parent_rc })
     }
 }
 
@@ -88,8 +84,8 @@ impl<T> BinarySearchTree<T> {
         Self { root: None }
     }
 
-    pub fn root(&self) -> Option<BstNodeHandle<T>> {
-        self.root.clone().map(BstNodeHandle::from)
+    pub fn root(&self) -> Option<BstNodeView<T>> {
+        self.root.clone().map(BstNodeView::from)
     }
 }
 
@@ -116,13 +112,13 @@ impl<T: Ord> BinarySearchTree<T> {
         }
     }
 
-    pub fn search(&self, value: &T) -> Option<BstNodeHandle<T>> {
+    pub fn search(&self, value: &T) -> Option<BstNodeView<T>> {
         let mut current = self.root.clone();
 
         while let Some(current_rc) = current {
             let current_borrow = current_rc.borrow();
             if value == &current_borrow.value {
-                return Some(BstNodeHandle::from(current_rc.clone()));
+                return Some(BstNodeView::from(current_rc.clone()));
             }
 
             current = if value < &current_borrow.value {
@@ -139,23 +135,23 @@ impl<T: Ord> BinarySearchTree<T> {
         self.search(value).is_some()
     }
 
-    pub fn min(&self) -> Option<BstNodeHandle<T>> {
+    pub fn min(&self) -> Option<BstNodeView<T>> {
         self.root
             .clone()
-            .map(|root_rc| BstNodeHandle::from(Self::leftmost(root_rc)))
+            .map(|root_rc| BstNodeView::from(Self::leftmost(root_rc)))
     }
 
-    pub fn max(&self) -> Option<BstNodeHandle<T>> {
+    pub fn max(&self) -> Option<BstNodeView<T>> {
         self.root
             .clone()
-            .map(|root_rc| BstNodeHandle::from(Self::rightmost(root_rc)))
+            .map(|root_rc| BstNodeView::from(Self::rightmost(root_rc)))
     }
 
-    pub fn predecessor(&self, handle: &BstNodeHandle<T>) -> Option<BstNodeHandle<T>> {
+    pub fn predecessor(&self, handle: &BstNodeView<T>) -> Option<BstNodeView<T>> {
         let mut current = handle.rc();
 
         if let Some(left_rc) = &current.borrow().left {
-            return Some(BstNodeHandle::from(Self::rightmost(left_rc.clone())));
+            return Some(BstNodeView::from(Self::rightmost(left_rc.clone())));
         }
 
         loop {
@@ -167,18 +163,18 @@ impl<T: Ord> BinarySearchTree<T> {
                 .as_ref()
                 .is_some_and(|r| Rc::ptr_eq(r, &current))
             {
-                return Some(BstNodeHandle::from(parent_rc));
+                return Some(BstNodeView::from(parent_rc));
             }
 
             current = parent_rc;
         }
     }
 
-    pub fn successor(&self, handle: &BstNodeHandle<T>) -> Option<BstNodeHandle<T>> {
+    pub fn successor(&self, handle: &BstNodeView<T>) -> Option<BstNodeView<T>> {
         let mut current = handle.rc();
 
         if let Some(right_rc) = &current.borrow().right {
-            return Some(BstNodeHandle::from(Self::leftmost(right_rc.clone())));
+            return Some(BstNodeView::from(Self::leftmost(right_rc.clone())));
         }
 
         loop {
@@ -190,18 +186,18 @@ impl<T: Ord> BinarySearchTree<T> {
                 .as_ref()
                 .is_some_and(|l| Rc::ptr_eq(l, &current))
             {
-                return Some(BstNodeHandle::from(parent_rc));
+                return Some(BstNodeView::from(parent_rc));
             }
 
             current = parent_rc;
         }
     }
 
-    pub fn predecessor_of_value(&self, value: &T) -> Option<BstNodeHandle<T>> {
+    pub fn predecessor_of_value(&self, value: &T) -> Option<BstNodeView<T>> {
         self.search(value).and_then(|h| self.predecessor(&h))
     }
 
-    pub fn successor_of_value(&self, value: &T) -> Option<BstNodeHandle<T>> {
+    pub fn successor_of_value(&self, value: &T) -> Option<BstNodeView<T>> {
         self.search(value).and_then(|h| self.successor(&h))
     }
 
@@ -264,7 +260,7 @@ impl<T: Ord> BinarySearchTree<T> {
         }
     }
 
-    pub fn delete(&mut self, handle: BstNodeHandle<T>) -> Option<T> {
+    pub fn delete(&mut self, handle: BstNodeView<T>) -> Option<T> {
         let target_rc = handle.into_inner();
 
         let has_left = target_rc.borrow().left.is_some();
