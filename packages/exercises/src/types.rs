@@ -4,6 +4,7 @@ use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 pub enum Op {
     Insert(i32),
     Delete(i32),
+    ExtractMin,
 }
 
 impl Op {
@@ -17,6 +18,10 @@ impl Op {
                 Span::styled("Delete ", Style::default().fg(Color::Red)),
                 Span::raw(value.to_string()),
             ]),
+            Self::ExtractMin => Line::from(Span::styled(
+                "Extract Min",
+                Style::default().fg(Color::Magenta),
+            )),
         }
     }
 }
@@ -26,6 +31,7 @@ pub enum TreeKind {
     Bst,
     Rb,
     BTree,
+    BinomialHeap,
 }
 
 #[derive(Clone, Copy)]

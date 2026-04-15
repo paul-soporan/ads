@@ -1,5 +1,6 @@
 use ads::{
-    BTree, BTreeNodeView, BinarySearchTree, BstNodeView, NodeColor, RbNodeView, RedBlackTree,
+    BTree, BTreeNodeView, BinarySearchTree, BinomialHeap, BinomialNodeView, BstNodeView, NodeColor,
+    RbNodeView, RedBlackTree,
 };
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 use std::{collections::BTreeMap, fmt::Display};
@@ -313,5 +314,140 @@ pub fn btree_key_count<T: Clone>(view: &Option<BTreeNodeView<T>>) -> usize {
                     .map(|c| btree_key_count(&Some(c.clone())))
                     .sum::<usize>()
         }
+    }
+}
+
+fn binomial_children<T>(node: &BinomialNodeView<T>) -> Vec<BinomialNodeView<T>> {
+    let mut children = Vec::new();
+    let mut current = node.child();
+    while let Some(c) = current {
+        let next = c.sibling();
+        children.push(c);
+        current = next;
+    }
+    children
+}
+
+fn build_binomial_tree_layout<T>(
+    node: &BinomialNodeView<T>,
+    level: usize,
+    cursor_x: &mut usize,
+    canvas: &mut TreeCanvas,
+    is_tree_root: bool,
+) -> usize
+where
+    T: Display,
+{
+    let padding = 2;
+    let children = binomial_children(node);
+    let val_str = node.value().to_string();
+    let label = if is_tree_root {
+        format!("{val_str}(B{})", node.degree())
+    } else {
+        val_str
+    };
+    let label_width = label.chars().count();
+    let row = level * 2;
+
+    if children.is_empty() {
+        let center_x = *cursor_x + label_width / 2;
+        let style = if is_tree_root {
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+        canvas.put(row, *cursor_x, label, style);
+        *cursor_x += label_width + padding;
+        return center_x;
+    }
+
+    let mut child_centers = Vec::with_capacity(children.len());
+    for child in &children {
+        let cc = build_binomial_tree_layout(child, level + 1, cursor_x, canvas, false);
+        child_centers.push(cc);
+    }
+
+    let first_cc = child_centers[0];
+    let last_cc = *child_centers.last().unwrap();
+    let center_x = (first_cc + last_cc) / 2;
+    let start_col = center_x.saturating_sub(label_width / 2);
+
+    let style = if is_tree_root {
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    };
+    canvas.put(row, start_col, label, style);
+
+    let edge_style = Style::default().fg(Color::DarkGray);
+    for &cc in &child_centers {
+        canvas.put(row + 1, cc, "│", edge_style);
+    }
+
+    center_x
+}
+
+pub fn render_binomial_heap_text(heap: &BinomialHeap<i32>) -> Text<'static> {
+    render_binomial_heap_text_generic(heap)
+}
+
+pub fn render_binomial_heap_text_generic<T>(heap: &BinomialHeap<T>) -> Text<'static>
+where
+    T: Ord + Display,
+{
+    let Some(head) = heap.head_view() else {
+        return Text::from(vec![Line::from(Span::styled(
+            "(empty heap)",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ))]);
+    };
+
+    let mut canvas = TreeCanvas::new();
+    let mut cursor_x = 0usize;
+    let mut current = Some(head);
+
+    while let Some(root) = current {
+        let next = root.sibling();
+        build_binomial_tree_layout(&root, 0, &mut cursor_x, &mut canvas, true);
+        cursor_x += 4;
+        current = next;
+    }
+
+    canvas.into_text()
+}
+
+pub fn binomial_heap_total<T: Ord>(heap: &BinomialHeap<T>) -> usize {
+    let mut total = 0usize;
+    let mut current = heap.head_view();
+    while let Some(node) = current {
+        total += 1usize << node.degree();
+        let next = node.sibling();
+        current = next;
+    }
+    total
+}
+
+pub fn binomial_heap_degrees_str<T: Ord>(heap: &BinomialHeap<T>) -> String {
+    let mut parts = Vec::new();
+    let mut current = heap.head_view();
+    while let Some(node) = current {
+        parts.push(format!("B{}", node.degree()));
+        let next = node.sibling();
+        current = next;
+    }
+    if parts.is_empty() {
+        "(none)".to_string()
+    } else {
+        parts.join(", ")
     }
 }

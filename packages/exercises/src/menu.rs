@@ -4,10 +4,11 @@ pub const MAIN_MENU_ITEMS: [&str; 4] = [
     "Applications",
     "Exit",
 ];
-pub const DATA_STRUCTURE_ITEMS: [&str; 4] = [
+pub const DATA_STRUCTURE_ITEMS: [&str; 5] = [
     "Binary Search Tree (BST)",
     "Red-Black Tree",
     "B-Tree (order 2)",
+    "Binomial Heap",
     "Go Back",
 ];
 pub const APPLICATION_ITEMS: [&str; 3] = [
@@ -23,6 +24,8 @@ pub const INTERACTIVE_ACTIONS: [&str; 6] = [
     "Predecessor / Successor",
     "Back",
 ];
+pub const HEAP_INTERACTIVE_ACTIONS: [&str; 5] =
+    ["Insert", "Delete", "Extract Min", "Show Min", "Back"];
 
 pub struct MenuState {
     pub items: &'static [&'static str],

@@ -9,10 +9,8 @@ use ratatui::{
 use std::{io, time::Duration};
 
 use crate::applications::{LeaderboardState, MedianStreamState};
-use crate::interactive::{InteractiveState, PromptState};
-use crate::menu::{
-    APPLICATION_ITEMS, DATA_STRUCTURE_ITEMS, INTERACTIVE_ACTIONS, MAIN_MENU_ITEMS, MenuState,
-};
+use crate::interactive::{InteractiveState, InteractiveTree, PromptState};
+use crate::menu::{APPLICATION_ITEMS, DATA_STRUCTURE_ITEMS, MAIN_MENU_ITEMS, MenuState};
 use crate::screen::Screen;
 use crate::showcase::ShowcaseState;
 use crate::types::{InputAction, StatusMessage, TreeKind};
@@ -194,7 +192,9 @@ impl App {
             .wrap(Wrap { trim: false });
         frame.render_widget(stats, side[0]);
 
-        let action_items = INTERACTIVE_ACTIONS
+        let action_items = interactive
+            .tree
+            .action_list()
             .iter()
             .enumerate()
             .map(|(index, item)| ListItem::new(format!("{}. {item}", index + 1)))
@@ -446,6 +446,7 @@ impl App {
                         0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
                         1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
                         2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
+                        3 => Screen::Showcase(ShowcaseState::new(TreeKind::BinomialHeap)),
                         _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                     });
                 }
@@ -456,6 +457,7 @@ impl App {
                             0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
                             1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
                             2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
+                            3 => Screen::Showcase(ShowcaseState::new(TreeKind::BinomialHeap)),
                             _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                         });
                     }
@@ -473,6 +475,7 @@ impl App {
                         0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
                         1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
                         2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
+                        3 => Screen::Interactive(InteractiveState::new(TreeKind::BinomialHeap)),
                         _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                     });
                 }
@@ -483,6 +486,7 @@ impl App {
                             0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
                             1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
                             2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
+                            3 => Screen::Interactive(InteractiveState::new(TreeKind::BinomialHeap)),
                             _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                         });
                     }
@@ -532,57 +536,100 @@ impl App {
                 KeyCode::Down => interactive.next_action(),
                 KeyCode::Enter => {
                     let action = interactive.selected_action;
-                    match action {
-                        0 => {
-                            next_prompt = Some(PromptState::new(
-                                interactive.tree.kind(),
-                                InputAction::Insert,
-                                "Insert Value",
-                                "Enter an integer to insert.",
-                            ));
-                        }
-                        1 => {
-                            next_prompt = Some(PromptState::new(
-                                interactive.tree.kind(),
-                                InputAction::Delete,
-                                "Delete Value",
-                                "Enter an integer to delete.",
-                            ));
-                        }
-                        2 => {
-                            next_prompt = Some(PromptState::new(
-                                interactive.tree.kind(),
-                                InputAction::Search,
-                                "Search Value",
-                                "Enter an integer to search for.",
-                            ));
-                        }
-                        3 => {
-                            let (min_value, max_value) = interactive.tree.min_max();
-                            next_status = Some(StatusMessage::info(format!(
-                                "Min: {} • Max: {}",
-                                format_option(min_value),
-                                format_option(max_value)
-                            )));
-                        }
-                        4 => {
-                            next_prompt = Some(PromptState::new(
-                                interactive.tree.kind(),
-                                InputAction::PredSucc,
-                                "Base Value",
-                                "Enter an integer to inspect neighbors.",
-                            ));
-                        }
-                        5 => {
-                            next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                                &DATA_STRUCTURE_ITEMS,
-                            )));
-                        }
-                        _ => {}
+                    match interactive.tree.kind() {
+                        TreeKind::BinomialHeap => match action {
+                            0 => {
+                                next_prompt = Some(PromptState::new(
+                                    TreeKind::BinomialHeap,
+                                    InputAction::Insert,
+                                    "Insert Value",
+                                    "Enter an integer to insert.",
+                                ));
+                            }
+                            1 => {
+                                next_prompt = Some(PromptState::new(
+                                    TreeKind::BinomialHeap,
+                                    InputAction::Delete,
+                                    "Delete Value",
+                                    "Enter an integer to delete.",
+                                ));
+                            }
+                            2 => {
+                                if let InteractiveTree::BinomialHeap(heap) = &mut interactive.tree {
+                                    next_status = Some(match heap.extract_min() {
+                                        Some(v) => StatusMessage::success(format!(
+                                            "Extracted minimum: {v}"
+                                        )),
+                                        None => StatusMessage::error("Heap is empty."),
+                                    });
+                                }
+                            }
+                            3 => {
+                                let (min_val, _) = interactive.tree.min_max();
+                                next_status = Some(StatusMessage::info(format!(
+                                    "Min: {}",
+                                    format_option(min_val)
+                                )));
+                            }
+                            _ => {
+                                next_screen = Some(Screen::InteractiveMenu(MenuState::new(
+                                    &DATA_STRUCTURE_ITEMS,
+                                )));
+                            }
+                        },
+                        _ => match action {
+                            0 => {
+                                next_prompt = Some(PromptState::new(
+                                    interactive.tree.kind(),
+                                    InputAction::Insert,
+                                    "Insert Value",
+                                    "Enter an integer to insert.",
+                                ));
+                            }
+                            1 => {
+                                next_prompt = Some(PromptState::new(
+                                    interactive.tree.kind(),
+                                    InputAction::Delete,
+                                    "Delete Value",
+                                    "Enter an integer to delete.",
+                                ));
+                            }
+                            2 => {
+                                next_prompt = Some(PromptState::new(
+                                    interactive.tree.kind(),
+                                    InputAction::Search,
+                                    "Search Value",
+                                    "Enter an integer to search for.",
+                                ));
+                            }
+                            3 => {
+                                let (min_value, max_value) = interactive.tree.min_max();
+                                next_status = Some(StatusMessage::info(format!(
+                                    "Min: {} • Max: {}",
+                                    format_option(min_value),
+                                    format_option(max_value)
+                                )));
+                            }
+                            4 => {
+                                next_prompt = Some(PromptState::new(
+                                    interactive.tree.kind(),
+                                    InputAction::PredSucc,
+                                    "Base Value",
+                                    "Enter an integer to inspect neighbors.",
+                                ));
+                            }
+                            5 => {
+                                next_screen = Some(Screen::InteractiveMenu(MenuState::new(
+                                    &DATA_STRUCTURE_ITEMS,
+                                )));
+                            }
+                            _ => {}
+                        },
                     }
                 }
                 KeyCode::Char(digit) => {
-                    if let Some(selection) = digit_to_index(digit, INTERACTIVE_ACTIONS.len()) {
+                    if let Some(selection) = digit_to_index(digit, interactive.tree.action_count())
+                    {
                         interactive.selected_action = selection;
                     }
                 }

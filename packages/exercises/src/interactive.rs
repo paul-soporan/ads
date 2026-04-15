@@ -1,10 +1,11 @@
-use ads::{BTree, BinarySearchTree, RedBlackTree};
+use ads::{BTree, BinarySearchTree, BinomialHeap, RedBlackTree};
 use ratatui::prelude::{Line, Text};
 
-use crate::menu::INTERACTIVE_ACTIONS;
+use crate::menu::{HEAP_INTERACTIVE_ACTIONS, INTERACTIVE_ACTIONS};
 use crate::render::{
-    bst_depth, btree_depth, btree_key_count, rb_black_height, rb_depth, render_bst_tree_text,
-    render_btree_text, render_rb_tree_text,
+    binomial_heap_degrees_str, binomial_heap_total, bst_depth, btree_depth, btree_key_count,
+    rb_black_height, rb_depth, render_binomial_heap_text, render_bst_tree_text, render_btree_text,
+    render_rb_tree_text,
 };
 use crate::types::{InputAction, StatusMessage, TreeKind};
 use crate::utils::format_option;
@@ -24,6 +25,7 @@ impl PromptState {
                 TreeKind::Bst => format!("BST · {title}"),
                 TreeKind::Rb => format!("Red-Black Tree · {title}"),
                 TreeKind::BTree => format!("B-Tree · {title}"),
+                TreeKind::BinomialHeap => format!("Binomial Heap · {title}"),
             },
             hint: hint.to_string(),
             buffer: String::new(),
@@ -35,6 +37,7 @@ pub enum InteractiveTree {
     Bst(BinarySearchTree<i32>),
     Rb(RedBlackTree<i32>),
     BTree(BTree<i32>),
+    BinomialHeap(BinomialHeap<i32>),
 }
 
 impl InteractiveTree {
@@ -43,6 +46,7 @@ impl InteractiveTree {
             TreeKind::Bst => Self::Bst(BinarySearchTree::new()),
             TreeKind::Rb => Self::Rb(RedBlackTree::new()),
             TreeKind::BTree => Self::BTree(BTree::new(2)),
+            TreeKind::BinomialHeap => Self::BinomialHeap(BinomialHeap::new()),
         }
     }
 
@@ -51,6 +55,7 @@ impl InteractiveTree {
             Self::Bst(_) => TreeKind::Bst,
             Self::Rb(_) => TreeKind::Rb,
             Self::BTree(_) => TreeKind::BTree,
+            Self::BinomialHeap(_) => TreeKind::BinomialHeap,
         }
     }
 
@@ -59,6 +64,7 @@ impl InteractiveTree {
             Self::Bst(_) => "Binary Search Tree",
             Self::Rb(_) => "Red-Black Tree",
             Self::BTree(_) => "B-Tree (t = 2, internal=yellow, leaf=cyan)",
+            Self::BinomialHeap(_) => "Binomial Heap  (root=magenta, internal=green, leaf=cyan)",
         }
     }
 
@@ -67,6 +73,7 @@ impl InteractiveTree {
             Self::Bst(_) => "BST Interactive",
             Self::Rb(_) => "Red-Black Interactive",
             Self::BTree(_) => "B-Tree Interactive",
+            Self::BinomialHeap(_) => "Binomial Heap Interactive",
         }
     }
 
@@ -75,6 +82,7 @@ impl InteractiveTree {
             Self::Bst(tree) => render_bst_tree_text(tree),
             Self::Rb(tree) => render_rb_tree_text(tree),
             Self::BTree(tree) => render_btree_text(tree),
+            Self::BinomialHeap(heap) => render_binomial_heap_text(heap),
         }
     }
 
@@ -92,6 +100,28 @@ impl InteractiveTree {
                 tree.min().map(|handle| *handle.value()),
                 tree.max().map(|handle| *handle.value()),
             ),
+            Self::BinomialHeap(heap) => (heap.min().map(|v| *v.value()), None),
+        }
+    }
+
+    /// Returns the list of action labels shown in the sidebar for this tree kind.
+    pub fn action_list(&self) -> &'static [&'static str] {
+        match self {
+            Self::BinomialHeap(_) => &HEAP_INTERACTIVE_ACTIONS,
+            _ => &INTERACTIVE_ACTIONS,
+        }
+    }
+
+    /// Number of actions available for this tree kind.
+    pub fn action_count(&self) -> usize {
+        self.action_list().len()
+    }
+
+    /// Context-sensitive one-line help text for the footer bar.
+    pub fn help_text(&self) -> &'static str {
+        match self {
+            Self::BinomialHeap(_) => "↑/↓ move • Enter run • 1-5 shortcuts • Esc back • q quit",
+            _ => "↑/↓ move • Enter run • 1-6 shortcuts • Esc back • q quit",
         }
     }
 
@@ -135,6 +165,14 @@ impl InteractiveTree {
                     Line::from(format!("Max: {}", format_option(max_value))),
                 ])
             }
+            Self::BinomialHeap(heap) => Text::from(vec![
+                Line::from(format!("Total elements: {}", binomial_heap_total(heap))),
+                Line::from(format!("Trees: {}", binomial_heap_degrees_str(heap))),
+                Line::from(format!(
+                    "Min: {}",
+                    format_option(heap.min().map(|v| *v.value()))
+                )),
+            ]),
         }
     }
 
@@ -232,6 +270,22 @@ impl InteractiveTree {
                     format_option(successor)
                 ))
             }
+            (Self::BinomialHeap(heap), InputAction::Insert) => {
+                heap.insert(value);
+                StatusMessage::success(format!("Inserted {value} into the binomial heap."))
+            }
+            (Self::BinomialHeap(heap), InputAction::Delete) => match heap.search(&value) {
+                Some(handle) => {
+                    heap.delete(handle);
+                    StatusMessage::success(format!("Deleted {value} from the binomial heap."))
+                }
+                None => {
+                    StatusMessage::error(format!("Value {value} not found in the binomial heap."))
+                }
+            },
+            (Self::BinomialHeap(_), _) => {
+                StatusMessage::error("Operation not supported for binomial heap.")
+            }
         }
     }
 }
@@ -250,12 +304,14 @@ impl InteractiveState {
     }
 
     pub fn next_action(&mut self) {
-        self.selected_action = (self.selected_action + 1) % INTERACTIVE_ACTIONS.len();
+        let n = self.tree.action_count();
+        self.selected_action = (self.selected_action + 1) % n;
     }
 
     pub fn previous_action(&mut self) {
+        let n = self.tree.action_count();
         self.selected_action = if self.selected_action == 0 {
-            INTERACTIVE_ACTIONS.len() - 1
+            n - 1
         } else {
             self.selected_action - 1
         };

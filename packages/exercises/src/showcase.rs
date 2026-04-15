@@ -1,10 +1,11 @@
-use ads::{BTree, BinarySearchTree, RedBlackTree};
+use ads::{BTree, BinarySearchTree, BinomialHeap, RedBlackTree};
 use ratatui::prelude::{Line, Text};
 use ratatui::widgets::ListItem;
 
 use crate::render::{
-    bst_depth, btree_depth, btree_key_count, rb_black_height, rb_depth, render_bst_tree_text,
-    render_btree_text, render_rb_tree_text,
+    binomial_heap_degrees_str, binomial_heap_total, bst_depth, btree_depth, btree_key_count,
+    rb_black_height, rb_depth, render_binomial_heap_text, render_bst_tree_text, render_btree_text,
+    render_rb_tree_text,
 };
 use crate::types::{Op, TreeKind};
 use crate::utils::format_option;
@@ -49,6 +50,27 @@ pub const BTREE_SHOWCASE_OPS: [Op; 18] = [
     Op::Delete(25),
 ];
 
+pub const BINOMIAL_SHOWCASE_OPS: [Op; 18] = [
+    Op::Insert(15),
+    Op::Insert(10),
+    Op::Insert(20),
+    Op::Insert(5),
+    Op::Insert(30),
+    Op::Insert(25),
+    Op::Insert(8),
+    Op::Insert(3),
+    Op::Insert(12),
+    Op::Insert(7),
+    Op::Delete(30),
+    Op::Delete(15),
+    Op::ExtractMin,
+    Op::ExtractMin,
+    Op::Insert(2),
+    Op::Insert(4),
+    Op::Delete(8),
+    Op::ExtractMin,
+];
+
 pub const RB_SHOWCASE_OPS: [Op; 12] = [
     Op::Insert(10),
     Op::Insert(20),
@@ -79,6 +101,7 @@ impl ShowcaseState {
             TreeKind::Bst => "BST Showcase",
             TreeKind::Rb => "Red-Black Tree Showcase",
             TreeKind::BTree => "B-Tree Showcase",
+            TreeKind::BinomialHeap => "Binomial Heap Showcase",
         }
     }
 
@@ -87,6 +110,7 @@ impl ShowcaseState {
             TreeKind::Bst => "Binary Search Tree",
             TreeKind::Rb => "Red-Black Tree",
             TreeKind::BTree => "B-Tree  (t = 2, internal=yellow, leaf=cyan)",
+            TreeKind::BinomialHeap => "Binomial Heap  (root=magenta, internal=green, leaf=cyan)",
         }
     }
 
@@ -95,6 +119,7 @@ impl ShowcaseState {
             TreeKind::Bst => &BST_SHOWCASE_OPS,
             TreeKind::Rb => &RB_SHOWCASE_OPS,
             TreeKind::BTree => &BTREE_SHOWCASE_OPS,
+            TreeKind::BinomialHeap => &BINOMIAL_SHOWCASE_OPS,
         }
     }
 
@@ -169,6 +194,21 @@ impl ShowcaseState {
                     format_option(tree.max().map(|handle| *handle.value()))
                 )));
             }
+            TreeKind::BinomialHeap => {
+                let heap = build_binomial_showcase_heap(self.step);
+                lines.push(Line::from(format!(
+                    "Total elements: {}",
+                    binomial_heap_total(&heap)
+                )));
+                lines.push(Line::from(format!(
+                    "Trees: {}",
+                    binomial_heap_degrees_str(&heap)
+                )));
+                lines.push(Line::from(format!(
+                    "Min: {}",
+                    format_option(heap.min().map(|v| *v.value()))
+                )));
+            }
         }
 
         Text::from(lines)
@@ -193,6 +233,7 @@ impl ShowcaseState {
                 let label = match op {
                     Op::Insert(value) => format!("{:>2}. Insert {value}", index + 1),
                     Op::Delete(value) => format!("{:>2}. Delete {value}", index + 1),
+                    Op::ExtractMin => format!("{:>2}. Extract Min", index + 1),
                 };
                 ListItem::new(label)
             })
@@ -204,6 +245,9 @@ impl ShowcaseState {
             TreeKind::Bst => render_bst_tree_text(&build_bst_showcase_tree(self.step)),
             TreeKind::Rb => render_rb_tree_text(&build_rb_showcase_tree(self.step)),
             TreeKind::BTree => render_btree_text(&build_btree_showcase_tree(self.step)),
+            TreeKind::BinomialHeap => {
+                render_binomial_heap_text(&build_binomial_showcase_heap(self.step))
+            }
         }
     }
 }
@@ -216,6 +260,7 @@ pub fn build_bst_showcase_tree(step: usize) -> BinarySearchTree<i32> {
             Op::Delete(value) => {
                 let _ = tree.delete_value(value);
             }
+            Op::ExtractMin => {}
         }
     }
     tree
@@ -229,6 +274,7 @@ pub fn build_rb_showcase_tree(step: usize) -> RedBlackTree<i32> {
             Op::Delete(value) => {
                 let _ = tree.delete_value(value);
             }
+            Op::ExtractMin => {}
         }
     }
     tree
@@ -242,7 +288,26 @@ pub fn build_btree_showcase_tree(step: usize) -> BTree<i32> {
             Op::Delete(value) => {
                 let _ = tree.delete_value(value);
             }
+            Op::ExtractMin => {}
         }
     }
     tree
+}
+
+pub fn build_binomial_showcase_heap(step: usize) -> BinomialHeap<i32> {
+    let mut heap = BinomialHeap::new();
+    for operation in BINOMIAL_SHOWCASE_OPS.iter().take(step) {
+        match operation {
+            Op::Insert(value) => heap.insert(*value),
+            Op::ExtractMin => {
+                let _ = heap.extract_min();
+            }
+            Op::Delete(value) => {
+                if let Some(handle) = heap.search(value) {
+                    let _ = heap.delete(handle);
+                }
+            }
+        }
+    }
+    heap
 }

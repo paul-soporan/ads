@@ -32,13 +32,13 @@ impl Screen {
         match self {
             Self::MainMenu(_) => "↑/↓ move • Enter select • 1-4 shortcuts • q quit",
             Self::ShowcaseMenu(_) | Self::InteractiveMenu(_) => {
-                "↑/↓ move • Enter select • 1-4 shortcuts • Esc back • q quit"
+                "↑/↓ move • Enter select • 1-5 shortcuts • Esc back • q quit"
             }
             Self::ApplicationsMenu(_) => {
                 "↑/↓ move • Enter select • 1-3 shortcuts • Esc back • q quit"
             }
             Self::Showcase(_) => "←/→ or p/n step • Esc back • q quit",
-            Self::Interactive(_) => "↑/↓ move • Enter run • 1-6 shortcuts • Esc back • q quit",
+            Self::Interactive(state) => state.tree.help_text(),
             Self::Leaderboard(_) | Self::MedianStream(_) => {
                 "Type command • Enter execute • Backspace edit • Esc back • q quit"
             }

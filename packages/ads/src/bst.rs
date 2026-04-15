@@ -307,7 +307,8 @@ impl<T: Ord> BinarySearchTree<T> {
     }
 
     pub fn delete_value(&mut self, value: &T) -> Option<T> {
-        self.search(value).and_then(|h| self.delete(h))
+        let handle = self.search(value)?;
+        self.delete(handle)
     }
 }
 
