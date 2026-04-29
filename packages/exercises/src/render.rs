@@ -188,6 +188,144 @@ where
     render_tree_text(&tree.root())
 }
 
+fn layout_ds_subtree(
+    node: usize,
+    level: usize,
+    row_offset: usize,
+    cursor_x: &mut usize,
+    canvas: &mut TreeCanvas,
+    children_map: &BTreeMap<usize, Vec<usize>>,
+    is_root: bool,
+) -> usize {
+    let label = format!("[{node}]");
+    let label_width = label.chars().count();
+    let padding = 2;
+    let children = children_map.get(&node).cloned().unwrap_or_default();
+    let row = row_offset + level * 2;
+
+    let node_style = if is_root {
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    if children.is_empty() {
+        let center_x = *cursor_x + label_width / 2;
+        canvas.put(row, *cursor_x, label, node_style);
+        *cursor_x += label_width + padding;
+        return center_x;
+    }
+
+    let mut child_centers: Vec<usize> = Vec::new();
+    for child in &children {
+        let cc = layout_ds_subtree(
+            *child,
+            level + 1,
+            row_offset,
+            cursor_x,
+            canvas,
+            children_map,
+            false,
+        );
+        child_centers.push(cc);
+    }
+
+    let first_cc = child_centers[0];
+    let last_cc = *child_centers.last().unwrap();
+    let center_x = (first_cc + last_cc) / 2;
+    let start_col = center_x.saturating_sub(label_width / 2);
+    canvas.put(row, start_col, label, node_style);
+
+    let edge_style = Style::default().fg(Color::DarkGray);
+    for &child_cc in &child_centers {
+        let connector_col = (center_x + child_cc) / 2;
+        let connector = if child_cc < center_x {
+            "╱"
+        } else if child_cc > center_x {
+            "╲"
+        } else {
+            "│"
+        };
+        canvas.put(row + 1, connector_col, connector, edge_style);
+    }
+
+    center_x
+}
+
+pub fn render_disjoint_set_forest_text(
+    components: &[(usize, Vec<usize>)],
+    parent_by_node: &[Option<usize>],
+    group_prefix: &str,
+) -> Text<'static> {
+    if components.is_empty() {
+        return Text::from(vec![Line::from(Span::styled(
+            "(empty forest)",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ))]);
+    }
+
+    let mut children_map = BTreeMap::<usize, Vec<usize>>::new();
+    for (node, parent) in parent_by_node.iter().enumerate() {
+        if let Some(p) = parent {
+            children_map.entry(*p).or_default().push(node);
+        }
+    }
+    for children in children_map.values_mut() {
+        children.sort_unstable();
+    }
+
+    let header_palette = [
+        Color::Yellow,
+        Color::LightBlue,
+        Color::LightGreen,
+        Color::LightMagenta,
+    ];
+
+    let row_offset = 2;
+    let component_gap = 4;
+
+    let mut canvas = TreeCanvas::new();
+    let mut cursor_x: usize = 0;
+
+    for (idx, (root, _members)) in components.iter().enumerate() {
+        let label_color = header_palette[idx % header_palette.len()];
+
+        let root_center_x = layout_ds_subtree(
+            *root,
+            0,
+            row_offset,
+            &mut cursor_x,
+            &mut canvas,
+            &children_map,
+            true,
+        );
+
+        let comp_label = format!("{group_prefix}{}", idx + 1);
+        let label_width = comp_label.chars().count();
+        let label_start = root_center_x.saturating_sub(label_width / 2);
+        canvas.put(
+            0,
+            label_start,
+            comp_label,
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        if idx + 1 < components.len() {
+            cursor_x += component_gap;
+        }
+    }
+
+    canvas.into_text()
+}
+
 pub fn bst_depth<T>(node: &Option<BstNodeView<T>>) -> usize {
     match node {
         Some(node) => 1 + usize::max(bst_depth(&node.left()), bst_depth(&node.right())),

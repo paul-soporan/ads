@@ -8,7 +8,10 @@ use ratatui::{
 };
 use std::{io, time::Duration};
 
-use crate::applications::{LeaderboardState, MedianStreamState};
+use crate::applications::{
+    GraphUnionFindState, LeaderboardState, MedianStreamState, ProvinceCounterState,
+    SocialNetworkState,
+};
 use crate::interactive::{InteractiveState, InteractiveTree, PromptState};
 use crate::menu::{APPLICATION_ITEMS, DATA_STRUCTURE_ITEMS, MAIN_MENU_ITEMS, MenuState};
 use crate::screen::Screen;
@@ -83,6 +86,11 @@ impl App {
                 self.render_leaderboard(frame, chunks[1], leaderboard)
             }
             Screen::MedianStream(median) => self.render_median_stream(frame, chunks[1], median),
+            Screen::GraphUnionFind(graph) => self.render_graph_union_find(frame, chunks[1], graph),
+            Screen::ProvinceCounter(provinces) => {
+                self.render_province_counter(frame, chunks[1], provinces)
+            }
+            Screen::SocialNetwork(social) => self.render_social_network(frame, chunks[1], social),
         }
 
         self.render_footer(frame, chunks[2]);
@@ -327,6 +335,173 @@ impl App {
         frame.render_widget(tree_panel, side[1]);
     }
 
+    fn render_graph_union_find(&self, frame: &mut Frame, area: Rect, graph: &GraphUnionFindState) {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(area);
+
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .split(body[0]);
+
+        let output = Paragraph::new(graph.output_text())
+            .block(Block::default().borders(Borders::ALL).title("Output"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(output, left[0]);
+
+        let prompt = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    "> ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(graph.input.as_str()),
+            ]),
+            Line::from(Span::styled(
+                "SETN n | ADD u v | ANALYZE | SAMPLE",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command Input"),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, left[1]);
+
+        let side = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(8)])
+            .split(body[1]);
+
+        let stats = Paragraph::new(graph.stats_text())
+            .block(Block::default().borders(Borders::ALL).title("Stats"));
+        frame.render_widget(stats, side[0]);
+
+        let state = Paragraph::new(graph.state_text())
+            .block(Block::default().borders(Borders::ALL).title("State"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(state, side[1]);
+    }
+
+    fn render_province_counter(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        provinces: &ProvinceCounterState,
+    ) {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(area);
+
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .split(body[0]);
+
+        let output = Paragraph::new(provinces.output_text())
+            .block(Block::default().borders(Borders::ALL).title("Output"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(output, left[0]);
+
+        let prompt = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    "> ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(provinces.input.as_str()),
+            ]),
+            Line::from(Span::styled(
+                "SETN n | CONNECT i j | ANALYZE | SAMPLE",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command Input"),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, left[1]);
+
+        let side = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Min(8)])
+            .split(body[1]);
+
+        let stats = Paragraph::new(provinces.stats_text())
+            .block(Block::default().borders(Borders::ALL).title("Stats"));
+        frame.render_widget(stats, side[0]);
+
+        let matrix = Paragraph::new(provinces.state_text())
+            .block(Block::default().borders(Borders::ALL).title("State"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(matrix, side[1]);
+    }
+
+    fn render_social_network(&self, frame: &mut Frame, area: Rect, social: &SocialNetworkState) {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(area);
+
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .split(body[0]);
+
+        let output = Paragraph::new(social.output_text())
+            .block(Block::default().borders(Borders::ALL).title("Output"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(output, left[0]);
+
+        let prompt = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    "> ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(social.input.as_str()),
+            ]),
+            Line::from(Span::styled(
+                "SETN n | FRIEND u v | ANALYZE | SAMPLE",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command Input"),
+        )
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, left[1]);
+
+        let side = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(8)])
+            .split(body[1]);
+
+        let stats = Paragraph::new(social.stats_text())
+            .block(Block::default().borders(Borders::ALL).title("Stats"));
+        frame.render_widget(stats, side[0]);
+
+        let events = Paragraph::new(social.state_text())
+            .block(Block::default().borders(Borders::ALL).title("State"))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(events, side[1]);
+    }
+
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let help = if self.prompt.is_some() {
             "Type a number, Enter to submit, Esc to cancel."
@@ -503,6 +678,9 @@ impl App {
                     next_screen = Some(match menu.selected {
                         0 => Screen::Leaderboard(LeaderboardState::new()),
                         1 => Screen::MedianStream(MedianStreamState::new()),
+                        2 => Screen::GraphUnionFind(GraphUnionFindState::new()),
+                        3 => Screen::ProvinceCounter(ProvinceCounterState::new()),
+                        4 => Screen::SocialNetwork(SocialNetworkState::new()),
                         _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                     });
                 }
@@ -512,6 +690,9 @@ impl App {
                         next_screen = Some(match selection {
                             0 => Screen::Leaderboard(LeaderboardState::new()),
                             1 => Screen::MedianStream(MedianStreamState::new()),
+                            2 => Screen::GraphUnionFind(GraphUnionFindState::new()),
+                            3 => Screen::ProvinceCounter(ProvinceCounterState::new()),
+                            4 => Screen::SocialNetwork(SocialNetworkState::new()),
                             _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
                         });
                     }
@@ -677,6 +858,75 @@ impl App {
                 KeyCode::Char(ch) => {
                     if !ch.is_control() {
                         leaderboard.input.push(ch);
+                    }
+                }
+                _ => {}
+            },
+            Screen::GraphUnionFind(graph) => match key.code {
+                KeyCode::Esc => {
+                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
+                }
+                KeyCode::Backspace => {
+                    graph.input.pop();
+                }
+                KeyCode::Enter => {
+                    let command = graph.input.trim().to_string();
+                    if command.is_empty() {
+                        next_status = Some(StatusMessage::error("Please enter a command."));
+                    } else {
+                        next_status = Some(graph.execute_command(command.as_str()));
+                        graph.input.clear();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    if !ch.is_control() {
+                        graph.input.push(ch);
+                    }
+                }
+                _ => {}
+            },
+            Screen::ProvinceCounter(provinces) => match key.code {
+                KeyCode::Esc => {
+                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
+                }
+                KeyCode::Backspace => {
+                    provinces.input.pop();
+                }
+                KeyCode::Enter => {
+                    let command = provinces.input.trim().to_string();
+                    if command.is_empty() {
+                        next_status = Some(StatusMessage::error("Please enter a command."));
+                    } else {
+                        next_status = Some(provinces.execute_command(command.as_str()));
+                        provinces.input.clear();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    if !ch.is_control() {
+                        provinces.input.push(ch);
+                    }
+                }
+                _ => {}
+            },
+            Screen::SocialNetwork(social) => match key.code {
+                KeyCode::Esc => {
+                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
+                }
+                KeyCode::Backspace => {
+                    social.input.pop();
+                }
+                KeyCode::Enter => {
+                    let command = social.input.trim().to_string();
+                    if command.is_empty() {
+                        next_status = Some(StatusMessage::error("Please enter a command."));
+                    } else {
+                        next_status = Some(social.execute_command(command.as_str()));
+                        social.input.clear();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    if !ch.is_control() {
+                        social.input.push(ch);
                     }
                 }
                 _ => {}
