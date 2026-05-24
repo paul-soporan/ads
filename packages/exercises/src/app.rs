@@ -9,21 +9,28 @@ use ratatui::{
 use std::{io, time::Duration};
 
 use crate::applications::{
-    GraphUnionFindState, LeaderboardState, MedianStreamState, ProvinceCounterState,
-    SocialNetworkState,
+    APPLICATION_MENU_ITEMS, COMMAND_APPLICATION_DEFINITIONS, CommandApplication,
 };
-use crate::interactive::{InteractiveState, InteractiveTree, PromptState};
-use crate::menu::{APPLICATION_ITEMS, DATA_STRUCTURE_ITEMS, MAIN_MENU_ITEMS, MenuState};
-use crate::screen::Screen;
-use crate::showcase::ShowcaseState;
-use crate::types::{InputAction, StatusMessage, TreeKind};
-use crate::utils::{centered_rect, digit_to_index, format_option};
+use crate::interactive::{
+    DATA_STRUCTURE_MENU_ITEMS, InteractiveState, PromptState, TREE_DEFINITIONS, TreeAction,
+};
+use crate::menu::{MAIN_MENU_ITEMS, MenuState};
+use crate::screen::{CommandApplicationScreen, Screen};
+use crate::showcase::{SHOWCASE_FACTORIES, ShowcaseState};
+use crate::types::StatusMessage;
+use crate::utils::{centered_rect, digit_to_index};
 
 pub struct App {
     pub screen: Screen,
     pub prompt: Option<PromptState>,
     pub status: StatusMessage,
     pub should_quit: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -82,15 +89,9 @@ impl App {
             Screen::Interactive(interactive) => {
                 self.render_interactive(frame, chunks[1], interactive)
             }
-            Screen::Leaderboard(leaderboard) => {
-                self.render_leaderboard(frame, chunks[1], leaderboard)
+            Screen::CommandApplication(screen) => {
+                self.render_command_application(frame, chunks[1], screen.application.as_ref())
             }
-            Screen::MedianStream(median) => self.render_median_stream(frame, chunks[1], median),
-            Screen::GraphUnionFind(graph) => self.render_graph_union_find(frame, chunks[1], graph),
-            Screen::ProvinceCounter(provinces) => {
-                self.render_province_counter(frame, chunks[1], provinces)
-            }
-            Screen::SocialNetwork(social) => self.render_social_network(frame, chunks[1], social),
         }
 
         self.render_footer(frame, chunks[2]);
@@ -222,284 +223,76 @@ impl App {
         frame.render_stateful_widget(actions, side[1], &mut state);
     }
 
-    fn render_leaderboard(&self, frame: &mut Frame, area: Rect, leaderboard: &LeaderboardState) {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area);
-
-        let left = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(4)])
-            .split(body[0]);
-
-        let output = Paragraph::new(leaderboard.output_text())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(output, left[0]);
-
-        let prompt = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(leaderboard.input.as_str()),
-            ]),
-            Line::from(Span::styled(
-                "Format: ADD player score | UPDATE player delta | REMOVE player | TOP k",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Command Input"),
-        )
-        .wrap(Wrap { trim: false });
-        frame.render_widget(prompt, left[1]);
-
-        let tree_panel = Paragraph::new(leaderboard.tree_text())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Red-Black Tree")
-                    .title_alignment(Alignment::Center),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(tree_panel, body[1]);
-    }
-
-    fn render_median_stream(&self, frame: &mut Frame, area: Rect, median: &MedianStreamState) {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area);
-
-        let left = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(6)])
-            .split(body[0]);
-
-        let info_panel = Paragraph::new(median.info_text())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(info_panel, left[0]);
-
-        let prompt = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(median.input.as_str()),
-            ]),
-            Line::from(Span::styled(
-                "Format: ADD x | REMOVE x | MEDIAN",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(Span::styled(
-                "Lower median is returned for an even count of elements.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Command Input"),
-        )
-        .wrap(Wrap { trim: false });
-        frame.render_widget(prompt, left[1]);
-
-        let side = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(8)])
-            .split(body[1]);
-
-        let stats = Paragraph::new(median.stats_text())
-            .block(Block::default().borders(Borders::ALL).title("Stats"));
-        frame.render_widget(stats, side[0]);
-
-        let tree_panel = Paragraph::new(median.tree_text())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Order-Statistic Tree")
-                    .title_alignment(Alignment::Center),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(tree_panel, side[1]);
-    }
-
-    fn render_graph_union_find(&self, frame: &mut Frame, area: Rect, graph: &GraphUnionFindState) {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area);
-
-        let left = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(5)])
-            .split(body[0]);
-
-        let output = Paragraph::new(graph.output_text())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(output, left[0]);
-
-        let prompt = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(graph.input.as_str()),
-            ]),
-            Line::from(Span::styled(
-                "SETN n | ADD u v | ANALYZE | SAMPLE",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Command Input"),
-        )
-        .wrap(Wrap { trim: false });
-        frame.render_widget(prompt, left[1]);
-
-        let side = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(8)])
-            .split(body[1]);
-
-        let stats = Paragraph::new(graph.stats_text())
-            .block(Block::default().borders(Borders::ALL).title("Stats"));
-        frame.render_widget(stats, side[0]);
-
-        let state = Paragraph::new(graph.state_text())
-            .block(Block::default().borders(Borders::ALL).title("State"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(state, side[1]);
-    }
-
-    fn render_province_counter(
+    fn render_command_application(
         &self,
         frame: &mut Frame,
         area: Rect,
-        provinces: &ProvinceCounterState,
+        application: &dyn CommandApplication,
     ) {
+        let layout = application.layout();
         let body = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .constraints([
+                Constraint::Percentage(layout.left_width_percent),
+                Constraint::Percentage(100 - layout.left_width_percent),
+            ])
             .split(area);
 
         let left = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(5)])
+            .constraints([Constraint::Min(8), Constraint::Length(layout.input_height)])
             .split(body[0]);
 
-        let output = Paragraph::new(provinces.output_text())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
+        let output = Paragraph::new(application.output_text())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(layout.output_title),
+            )
             .wrap(Wrap { trim: false });
         frame.render_widget(output, left[0]);
 
-        let prompt = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(provinces.input.as_str()),
-            ]),
-            Line::from(Span::styled(
-                "SETN n | CONNECT i j | ANALYZE | SAMPLE",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Command Input"),
-        )
-        .wrap(Wrap { trim: false });
+        let mut prompt_lines = vec![Line::from(vec![
+            Span::styled(
+                "> ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(application.input_buffer()),
+        ])];
+        prompt_lines.extend(application.input_hint_lines());
+
+        let prompt = Paragraph::new(Text::from(prompt_lines))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(layout.input_title),
+            )
+            .wrap(Wrap { trim: false });
         frame.render_widget(prompt, left[1]);
 
         let side = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(8)])
+            .constraints([Constraint::Length(layout.stats_height), Constraint::Min(8)])
             .split(body[1]);
 
-        let stats = Paragraph::new(provinces.stats_text())
-            .block(Block::default().borders(Borders::ALL).title("Stats"));
-        frame.render_widget(stats, side[0]);
-
-        let matrix = Paragraph::new(provinces.state_text())
-            .block(Block::default().borders(Borders::ALL).title("State"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(matrix, side[1]);
-    }
-
-    fn render_social_network(&self, frame: &mut Frame, area: Rect, social: &SocialNetworkState) {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area);
-
-        let left = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Length(5)])
-            .split(body[0]);
-
-        let output = Paragraph::new(social.output_text())
-            .block(Block::default().borders(Borders::ALL).title("Output"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(output, left[0]);
-
-        let prompt = Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(social.input.as_str()),
-            ]),
-            Line::from(Span::styled(
-                "SETN n | FRIEND u v | ANALYZE | SAMPLE",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]))
-        .block(
+        let stats = Paragraph::new(application.stats_text()).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Command Input"),
-        )
-        .wrap(Wrap { trim: false });
-        frame.render_widget(prompt, left[1]);
-
-        let side = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(8)])
-            .split(body[1]);
-
-        let stats = Paragraph::new(social.stats_text())
-            .block(Block::default().borders(Borders::ALL).title("Stats"));
+                .title(layout.stats_title),
+        );
         frame.render_widget(stats, side[0]);
 
-        let events = Paragraph::new(social.state_text())
-            .block(Block::default().borders(Borders::ALL).title("State"))
+        let state = Paragraph::new(application.state_text())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(layout.state_title)
+                    .title_alignment(Alignment::Center),
+            )
             .wrap(Wrap { trim: false });
-        frame.render_widget(events, side[1]);
+        frame.render_widget(state, side[1]);
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
@@ -527,7 +320,7 @@ impl App {
                 Span::raw(prompt.buffer.as_str()),
             ]),
             Line::from(Span::styled(
-                prompt.hint.as_str(),
+                prompt.hint,
                 Style::default().fg(Color::DarkGray),
             )),
         ]))
@@ -567,141 +360,39 @@ impl App {
             Screen::MainMenu(menu) => match key.code {
                 KeyCode::Up => menu.previous(),
                 KeyCode::Down => menu.next(),
-                KeyCode::Enter => match menu.selected {
-                    0 => {
-                        next_screen =
-                            Some(Screen::ShowcaseMenu(MenuState::new(&DATA_STRUCTURE_ITEMS)))
+                KeyCode::Enter => {
+                    let (screen, quit) = Self::navigate_from_main(menu.selected);
+                    next_screen = screen;
+                    if quit {
+                        self.should_quit = true;
                     }
-                    1 => {
-                        next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                            &DATA_STRUCTURE_ITEMS,
-                        )))
-                    }
-                    2 => {
-                        next_screen =
-                            Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                    }
-                    3 => self.should_quit = true,
-                    _ => {}
-                },
+                }
                 KeyCode::Char(digit) => {
                     if let Some(selection) = digit_to_index(digit, menu.items.len()) {
                         menu.selected = selection;
-                        match selection {
-                            0 => {
-                                next_screen = Some(Screen::ShowcaseMenu(MenuState::new(
-                                    &DATA_STRUCTURE_ITEMS,
-                                )))
-                            }
-                            1 => {
-                                next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                                    &DATA_STRUCTURE_ITEMS,
-                                )))
-                            }
-                            2 => {
-                                next_screen = Some(Screen::ApplicationsMenu(MenuState::new(
-                                    &APPLICATION_ITEMS,
-                                )))
-                            }
-                            3 => self.should_quit = true,
-                            _ => {}
+                        let (screen, quit) = Self::navigate_from_main(selection);
+                        next_screen = screen;
+                        if quit {
+                            self.should_quit = true;
                         }
                     }
                 }
                 _ => {}
             },
-            Screen::ShowcaseMenu(menu) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)))
-                }
-                KeyCode::Up => menu.previous(),
-                KeyCode::Down => menu.next(),
-                KeyCode::Enter => {
-                    next_screen = Some(match menu.selected {
-                        0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
-                        1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
-                        2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
-                        3 => Screen::Showcase(ShowcaseState::new(TreeKind::BinomialHeap)),
-                        _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                    });
-                }
-                KeyCode::Char(digit) => {
-                    if let Some(selection) = digit_to_index(digit, menu.items.len()) {
-                        menu.selected = selection;
-                        next_screen = Some(match selection {
-                            0 => Screen::Showcase(ShowcaseState::new(TreeKind::Bst)),
-                            1 => Screen::Showcase(ShowcaseState::new(TreeKind::Rb)),
-                            2 => Screen::Showcase(ShowcaseState::new(TreeKind::BTree)),
-                            3 => Screen::Showcase(ShowcaseState::new(TreeKind::BinomialHeap)),
-                            _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                        });
-                    }
-                }
-                _ => {}
-            },
-            Screen::InteractiveMenu(menu) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)))
-                }
-                KeyCode::Up => menu.previous(),
-                KeyCode::Down => menu.next(),
-                KeyCode::Enter => {
-                    next_screen = Some(match menu.selected {
-                        0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
-                        1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
-                        2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
-                        3 => Screen::Interactive(InteractiveState::new(TreeKind::BinomialHeap)),
-                        _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                    });
-                }
-                KeyCode::Char(digit) => {
-                    if let Some(selection) = digit_to_index(digit, menu.items.len()) {
-                        menu.selected = selection;
-                        next_screen = Some(match selection {
-                            0 => Screen::Interactive(InteractiveState::new(TreeKind::Bst)),
-                            1 => Screen::Interactive(InteractiveState::new(TreeKind::Rb)),
-                            2 => Screen::Interactive(InteractiveState::new(TreeKind::BTree)),
-                            3 => Screen::Interactive(InteractiveState::new(TreeKind::BinomialHeap)),
-                            _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                        });
-                    }
-                }
-                _ => {}
-            },
-            Screen::ApplicationsMenu(menu) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)))
-                }
-                KeyCode::Up => menu.previous(),
-                KeyCode::Down => menu.next(),
-                KeyCode::Enter => {
-                    next_screen = Some(match menu.selected {
-                        0 => Screen::Leaderboard(LeaderboardState::new()),
-                        1 => Screen::MedianStream(MedianStreamState::new()),
-                        2 => Screen::GraphUnionFind(GraphUnionFindState::new()),
-                        3 => Screen::ProvinceCounter(ProvinceCounterState::new()),
-                        4 => Screen::SocialNetwork(SocialNetworkState::new()),
-                        _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                    });
-                }
-                KeyCode::Char(digit) => {
-                    if let Some(selection) = digit_to_index(digit, menu.items.len()) {
-                        menu.selected = selection;
-                        next_screen = Some(match selection {
-                            0 => Screen::Leaderboard(LeaderboardState::new()),
-                            1 => Screen::MedianStream(MedianStreamState::new()),
-                            2 => Screen::GraphUnionFind(GraphUnionFindState::new()),
-                            3 => Screen::ProvinceCounter(ProvinceCounterState::new()),
-                            4 => Screen::SocialNetwork(SocialNetworkState::new()),
-                            _ => Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS)),
-                        });
-                    }
-                }
-                _ => {}
-            },
+            Screen::ShowcaseMenu(menu) => {
+                next_screen = Self::handle_sub_menu_key(key, menu, Self::showcase_screen);
+            }
+            Screen::InteractiveMenu(menu) => {
+                next_screen = Self::handle_sub_menu_key(key, menu, Self::interactive_screen);
+            }
+            Screen::ApplicationsMenu(menu) => {
+                next_screen = Self::handle_sub_menu_key(key, menu, Self::application_screen);
+            }
             Screen::Showcase(showcase) => match key.code {
                 KeyCode::Esc => {
-                    next_screen = Some(Screen::ShowcaseMenu(MenuState::new(&DATA_STRUCTURE_ITEMS)));
+                    next_screen = Some(Screen::ShowcaseMenu(MenuState::new(
+                        &DATA_STRUCTURE_MENU_ITEMS,
+                    )));
                 }
                 KeyCode::Right | KeyCode::Char('n') => showcase.next_step(),
                 KeyCode::Left | KeyCode::Char('p') => showcase.previous_step(),
@@ -710,102 +401,29 @@ impl App {
             Screen::Interactive(interactive) => match key.code {
                 KeyCode::Esc => {
                     next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                        &DATA_STRUCTURE_ITEMS,
+                        &DATA_STRUCTURE_MENU_ITEMS,
                     )));
                 }
                 KeyCode::Up => interactive.previous_action(),
                 KeyCode::Down => interactive.next_action(),
                 KeyCode::Enter => {
                     let action = interactive.selected_action;
-                    match interactive.tree.kind() {
-                        TreeKind::BinomialHeap => match action {
-                            0 => {
-                                next_prompt = Some(PromptState::new(
-                                    TreeKind::BinomialHeap,
-                                    InputAction::Insert,
-                                    "Insert Value",
-                                    "Enter an integer to insert.",
-                                ));
-                            }
-                            1 => {
-                                next_prompt = Some(PromptState::new(
-                                    TreeKind::BinomialHeap,
-                                    InputAction::Delete,
-                                    "Delete Value",
-                                    "Enter an integer to delete.",
-                                ));
-                            }
-                            2 => {
-                                if let InteractiveTree::BinomialHeap(heap) = &mut interactive.tree {
-                                    next_status = Some(match heap.extract_min() {
-                                        Some(v) => StatusMessage::success(format!(
-                                            "Extracted minimum: {v}"
-                                        )),
-                                        None => StatusMessage::error("Heap is empty."),
-                                    });
-                                }
-                            }
-                            3 => {
-                                let (min_val, _) = interactive.tree.min_max();
-                                next_status = Some(StatusMessage::info(format!(
-                                    "Min: {}",
-                                    format_option(min_val)
-                                )));
-                            }
-                            _ => {
-                                next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                                    &DATA_STRUCTURE_ITEMS,
-                                )));
-                            }
-                        },
-                        _ => match action {
-                            0 => {
-                                next_prompt = Some(PromptState::new(
-                                    interactive.tree.kind(),
-                                    InputAction::Insert,
-                                    "Insert Value",
-                                    "Enter an integer to insert.",
-                                ));
-                            }
-                            1 => {
-                                next_prompt = Some(PromptState::new(
-                                    interactive.tree.kind(),
-                                    InputAction::Delete,
-                                    "Delete Value",
-                                    "Enter an integer to delete.",
-                                ));
-                            }
-                            2 => {
-                                next_prompt = Some(PromptState::new(
-                                    interactive.tree.kind(),
-                                    InputAction::Search,
-                                    "Search Value",
-                                    "Enter an integer to search for.",
-                                ));
-                            }
-                            3 => {
-                                let (min_value, max_value) = interactive.tree.min_max();
-                                next_status = Some(StatusMessage::info(format!(
-                                    "Min: {} • Max: {}",
-                                    format_option(min_value),
-                                    format_option(max_value)
-                                )));
-                            }
-                            4 => {
-                                next_prompt = Some(PromptState::new(
-                                    interactive.tree.kind(),
-                                    InputAction::PredSucc,
-                                    "Base Value",
-                                    "Enter an integer to inspect neighbors.",
-                                ));
-                            }
-                            5 => {
-                                next_screen = Some(Screen::InteractiveMenu(MenuState::new(
-                                    &DATA_STRUCTURE_ITEMS,
-                                )));
-                            }
-                            _ => {}
-                        },
+                    match interactive.tree.handle_action(action) {
+                        TreeAction::NeedsInput {
+                            action,
+                            title,
+                            hint,
+                        } => {
+                            next_prompt = Some(PromptState::new(action, title, hint));
+                        }
+                        TreeAction::Completed(status) => {
+                            next_status = Some(status);
+                        }
+                        TreeAction::Back => {
+                            next_screen = Some(Screen::InteractiveMenu(MenuState::new(
+                                &DATA_STRUCTURE_MENU_ITEMS,
+                            )));
+                        }
                     }
                 }
                 KeyCode::Char(digit) => {
@@ -816,121 +434,12 @@ impl App {
                 }
                 _ => {}
             },
-            Screen::MedianStream(median) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                }
-                KeyCode::Backspace => {
-                    median.input.pop();
-                }
-                KeyCode::Enter => {
-                    let command = median.input.trim().to_string();
-                    if command.is_empty() {
-                        next_status = Some(StatusMessage::error("Please enter a command."));
-                    } else {
-                        next_status = Some(median.execute_command(command.as_str()));
-                        median.input.clear();
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        median.input.push(ch);
-                    }
-                }
-                _ => {}
-            },
-            Screen::Leaderboard(leaderboard) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                }
-                KeyCode::Backspace => {
-                    leaderboard.input.pop();
-                }
-                KeyCode::Enter => {
-                    let command = leaderboard.input.trim().to_string();
-                    if command.is_empty() {
-                        next_status = Some(StatusMessage::error("Please enter a command."));
-                    } else {
-                        next_status = Some(leaderboard.execute_command(command.as_str()));
-                        leaderboard.input.clear();
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        leaderboard.input.push(ch);
-                    }
-                }
-                _ => {}
-            },
-            Screen::GraphUnionFind(graph) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                }
-                KeyCode::Backspace => {
-                    graph.input.pop();
-                }
-                KeyCode::Enter => {
-                    let command = graph.input.trim().to_string();
-                    if command.is_empty() {
-                        next_status = Some(StatusMessage::error("Please enter a command."));
-                    } else {
-                        next_status = Some(graph.execute_command(command.as_str()));
-                        graph.input.clear();
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        graph.input.push(ch);
-                    }
-                }
-                _ => {}
-            },
-            Screen::ProvinceCounter(provinces) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                }
-                KeyCode::Backspace => {
-                    provinces.input.pop();
-                }
-                KeyCode::Enter => {
-                    let command = provinces.input.trim().to_string();
-                    if command.is_empty() {
-                        next_status = Some(StatusMessage::error("Please enter a command."));
-                    } else {
-                        next_status = Some(provinces.execute_command(command.as_str()));
-                        provinces.input.clear();
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        provinces.input.push(ch);
-                    }
-                }
-                _ => {}
-            },
-            Screen::SocialNetwork(social) => match key.code {
-                KeyCode::Esc => {
-                    next_screen = Some(Screen::ApplicationsMenu(MenuState::new(&APPLICATION_ITEMS)))
-                }
-                KeyCode::Backspace => {
-                    social.input.pop();
-                }
-                KeyCode::Enter => {
-                    let command = social.input.trim().to_string();
-                    if command.is_empty() {
-                        next_status = Some(StatusMessage::error("Please enter a command."));
-                    } else {
-                        next_status = Some(social.execute_command(command.as_str()));
-                        social.input.clear();
-                    }
-                }
-                KeyCode::Char(ch) => {
-                    if !ch.is_control() {
-                        social.input.push(ch);
-                    }
-                }
-                _ => {}
-            },
+            Screen::CommandApplication(screen) => Self::handle_command_application_key(
+                key,
+                screen.application.as_mut(),
+                &mut next_screen,
+                &mut next_status,
+            ),
         }
 
         if let Some(screen) = next_screen {
@@ -984,5 +493,100 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_command_application_key(
+        key: KeyEvent,
+        application: &mut dyn CommandApplication,
+        next_screen: &mut Option<Screen>,
+        next_status: &mut Option<StatusMessage>,
+    ) {
+        match key.code {
+            KeyCode::Esc => {
+                *next_screen = Some(Screen::ApplicationsMenu(MenuState::new(
+                    &APPLICATION_MENU_ITEMS,
+                )));
+            }
+            KeyCode::Backspace => {
+                application.input_buffer_mut().pop();
+            }
+            KeyCode::Enter => {
+                *next_status = Some(application.submit_input());
+            }
+            KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    application.input_buffer_mut().push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_sub_menu_key(
+        key: KeyEvent,
+        menu: &mut MenuState,
+        navigate: fn(usize) -> Option<Screen>,
+    ) -> Option<Screen> {
+        match key.code {
+            KeyCode::Esc => Some(Screen::MainMenu(MenuState::new(&MAIN_MENU_ITEMS))),
+            KeyCode::Up => {
+                menu.previous();
+                None
+            }
+            KeyCode::Down => {
+                menu.next();
+                None
+            }
+            KeyCode::Enter => navigate(menu.selected),
+            KeyCode::Char(digit) => digit_to_index(digit, menu.items.len()).and_then(|selection| {
+                menu.selected = selection;
+                navigate(selection)
+            }),
+            _ => None,
+        }
+    }
+
+    fn navigate_from_main(selection: usize) -> (Option<Screen>, bool) {
+        match selection {
+            0 => (
+                Some(Screen::ShowcaseMenu(MenuState::new(
+                    &DATA_STRUCTURE_MENU_ITEMS,
+                ))),
+                false,
+            ),
+            1 => (
+                Some(Screen::InteractiveMenu(MenuState::new(
+                    &DATA_STRUCTURE_MENU_ITEMS,
+                ))),
+                false,
+            ),
+            2 => (
+                Some(Screen::ApplicationsMenu(MenuState::new(
+                    &APPLICATION_MENU_ITEMS,
+                ))),
+                false,
+            ),
+            3 => (None, true),
+            _ => (None, false),
+        }
+    }
+
+    fn showcase_screen(selection: usize) -> Option<Screen> {
+        Some(Screen::Showcase(SHOWCASE_FACTORIES.get(selection)?()))
+    }
+
+    fn interactive_screen(selection: usize) -> Option<Screen> {
+        let definition = TREE_DEFINITIONS.get(selection)?;
+        Some(Screen::Interactive(InteractiveState::new_from_factory(
+            definition.factory,
+        )))
+    }
+
+    fn application_screen(selection: usize) -> Option<Screen> {
+        let definition = COMMAND_APPLICATION_DEFINITIONS.get(selection)?;
+        Some(Screen::CommandApplication(CommandApplicationScreen::new(
+            definition.title,
+            (definition.factory)(),
+        )))
     }
 }

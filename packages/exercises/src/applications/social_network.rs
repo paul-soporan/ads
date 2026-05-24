@@ -1,8 +1,10 @@
 use ads::DisjointSet;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 
+use crate::applications::{CommandApplication, CommandApplicationLayout, parse_command_parts};
 use crate::render::render_disjoint_set_forest_text;
 use crate::types::StatusMessage;
+use crate::utils::format_members;
 
 enum SocialCommand {
     SetN(usize),
@@ -13,10 +15,7 @@ enum SocialCommand {
 
 impl SocialCommand {
     fn parse(input: &str) -> Result<Self, String> {
-        let parts = input.split_whitespace().collect::<Vec<_>>();
-        if parts.is_empty() {
-            return Err("Command cannot be empty.".to_string());
-        }
+        let parts = parse_command_parts(input)?;
 
         match parts[0].to_ascii_uppercase().as_str() {
             "SETN" => {
@@ -51,17 +50,6 @@ impl SocialCommand {
 struct SocialAnalysis {
     groups: Vec<(usize, Vec<usize>)>,
     parent_by_node: Vec<Option<usize>>,
-}
-
-fn format_members(members: &[usize]) -> String {
-    format!(
-        "{{{}}}",
-        members
-            .iter()
-            .map(|m| m.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
 }
 
 pub struct SocialNetworkState {
@@ -352,5 +340,42 @@ impl SocialNetworkState {
         };
 
         render_disjoint_set_forest_text(&analysis.groups, &analysis.parent_by_node, "G")
+    }
+}
+
+impl CommandApplication for SocialNetworkState {
+    fn execute_command(&mut self, raw: &str) -> StatusMessage {
+        Self::execute_command(self, raw)
+    }
+
+    fn input_buffer(&self) -> &str {
+        self.input.as_str()
+    }
+
+    fn input_buffer_mut(&mut self) -> &mut String {
+        &mut self.input
+    }
+
+    fn output_text(&self) -> Text<'static> {
+        Self::output_text(self)
+    }
+
+    fn stats_text(&self) -> Text<'static> {
+        Self::stats_text(self)
+    }
+
+    fn state_text(&self) -> Text<'static> {
+        Self::state_text(self)
+    }
+
+    fn input_hint_lines(&self) -> Vec<Line<'static>> {
+        vec![Line::from(Span::styled(
+            "SETN n | FRIEND u v | ANALYZE | SAMPLE",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    }
+
+    fn layout(&self) -> CommandApplicationLayout {
+        CommandApplicationLayout::new(62, 5, 6, "Output", "Command Input", "Stats", "State")
     }
 }

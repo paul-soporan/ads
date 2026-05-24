@@ -134,6 +134,12 @@ impl TreeCanvas {
     }
 }
 
+impl Default for TreeCanvas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn build_layout<N: RenderNode>(
     node: &Option<N>,
     level: usize,

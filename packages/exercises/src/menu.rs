@@ -4,21 +4,6 @@ pub const MAIN_MENU_ITEMS: [&str; 4] = [
     "Applications",
     "Exit",
 ];
-pub const DATA_STRUCTURE_ITEMS: [&str; 5] = [
-    "Binary Search Tree (BST)",
-    "Red-Black Tree",
-    "B-Tree (order 2)",
-    "Binomial Heap",
-    "Go Back",
-];
-pub const APPLICATION_ITEMS: [&str; 6] = [
-    "Dynamic Leaderboard",
-    "Dynamic Median of a Data Stream",
-    "Graph Components + Cycle Detection",
-    "Province Counter from isConnected Matrix",
-    "Social Network Friendship Groups",
-    "Go Back",
-];
 pub const INTERACTIVE_ACTIONS: [&str; 6] = [
     "Insert",
     "Delete",

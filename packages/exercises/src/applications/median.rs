@@ -1,6 +1,7 @@
 use ads::RedBlackTree;
-use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
+use ratatui::prelude::{Color, Line, Span, Style, Text};
 
+use crate::applications::{CommandApplication, CommandApplicationLayout, output_lines_to_text, parse_command_parts};
 use crate::render::render_rb_tree_text;
 use crate::types::StatusMessage;
 
@@ -12,10 +13,7 @@ pub enum MedianCommand {
 
 impl MedianCommand {
     pub fn parse(input: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = input.split_whitespace().collect();
-        if parts.is_empty() {
-            return Err("Command cannot be empty.".to_string());
-        }
+        let parts = parse_command_parts(input)?;
         match parts[0].to_ascii_uppercase().as_str() {
             "ADD" => {
                 if parts.len() != 2 {
@@ -92,20 +90,7 @@ impl MedianStreamState {
     }
 
     pub fn info_text(&self) -> Text<'static> {
-        if self.output.is_empty() {
-            return Text::from(vec![Line::from(Span::styled(
-                "Run MEDIAN to print results here.",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ))]);
-        }
-        Text::from(
-            self.output
-                .iter()
-                .map(|line| Line::from(line.clone()))
-                .collect::<Vec<_>>(),
-        )
+        output_lines_to_text(&self.output, "Run MEDIAN to print results here.")
     }
 
     pub fn stats_text(&self) -> Text<'static> {
@@ -127,5 +112,48 @@ impl MedianStreamState {
 
     pub fn tree_text(&self) -> Text<'static> {
         render_rb_tree_text(&self.tree)
+    }
+}
+
+impl CommandApplication for MedianStreamState {
+    fn execute_command(&mut self, raw: &str) -> StatusMessage {
+        Self::execute_command(self, raw)
+    }
+
+    fn input_buffer(&self) -> &str {
+        self.input.as_str()
+    }
+
+    fn input_buffer_mut(&mut self) -> &mut String {
+        &mut self.input
+    }
+
+    fn output_text(&self) -> Text<'static> {
+        Self::info_text(self)
+    }
+
+    fn stats_text(&self) -> Text<'static> {
+        Self::stats_text(self)
+    }
+
+    fn state_text(&self) -> Text<'static> {
+        Self::tree_text(self)
+    }
+
+    fn input_hint_lines(&self) -> Vec<Line<'static>> {
+        vec![
+            Line::from(Span::styled(
+                "Format: ADD x | REMOVE x | MEDIAN",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "Lower median is returned for an even count of elements.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    }
+
+    fn layout(&self) -> CommandApplicationLayout {
+        CommandApplicationLayout::new(62, 6, 6, "Output", "Command Input", "Stats", "Order-Statistic Tree")
     }
 }

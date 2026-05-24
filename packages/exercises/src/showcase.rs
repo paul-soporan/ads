@@ -87,8 +87,8 @@ pub const RB_SHOWCASE_OPS: [Op; 12] = [
 ];
 
 pub struct ShowcaseState {
-    pub kind: TreeKind,
-    pub step: usize,
+    kind: TreeKind,
+    step: usize,
 }
 
 impl ShowcaseState {
@@ -293,6 +293,13 @@ pub fn build_btree_showcase_tree(step: usize) -> BTree<i32> {
     }
     tree
 }
+
+pub const SHOWCASE_FACTORIES: [fn() -> ShowcaseState; 4] = [
+    || ShowcaseState::new(TreeKind::Bst),
+    || ShowcaseState::new(TreeKind::Rb),
+    || ShowcaseState::new(TreeKind::BTree),
+    || ShowcaseState::new(TreeKind::BinomialHeap),
+];
 
 pub fn build_binomial_showcase_heap(step: usize) -> BinomialHeap<i32> {
     let mut heap = BinomialHeap::new();
