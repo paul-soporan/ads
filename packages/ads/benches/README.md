@@ -14,7 +14,9 @@ Focuses on atomic operation throughput:
 - **`sequences.rs`**: Benchmarks `push_back` and `pop_front` for linear structures.
     - *Coverage*: Singly/Doubly Linked Lists (`safe`, `raw`, `arena`), `std::Vec`, `std::VecDeque`, and `std::LinkedList`.
 - **`heaps.rs`**: Benchmarks `push` and `pop` throughput for priority queues.
-    - *Coverage*: `ads::BinaryHeap` (safe) and `std::BinaryHeap`.
+    - *Coverage*: `BinaryHeap`, `BinomialHeap`, `FibonacciHeap` (Safe, Raw, Arena) and `std::BinaryHeap`.
+- **`dsu.rs`**: Benchmarks `union` and `find` operations for Disjoint Set Union (Union-Find).
+    - *Coverage*: `DisjointSet` (Safe, Raw, Arena).
 
 ### 🧪 Macro Benchmarks ([`macro/`](./macro/))
 Focuses on complex, interleaved real-world workloads:
@@ -29,8 +31,8 @@ Focuses on architectural and algorithmic stress testing:
 
 ## 🏷️ Benchmark ID Taxonomy
 
-Benchmark IDs are normalized to the format: `<operation>/<implementation>`
-*Example: `insert/btree_arena_t8` (Arena-allocated B-Tree insertion).*
+Benchmark IDs are normalized to the format: `<operation>/<implementation>/<payload>/<distribution>/<size>`
+*Example: `insert/btree_arena_t8/u64/uniform/10000`*
 
 ## 🎲 Deterministic Data Generators
 
@@ -54,16 +56,31 @@ To ensure results are reproducible, we use custom generators ([`generators/`](./
 
 ## 🚀 Running Benchmarks
 
+Benchmarks are managed via `cargo xtask`.
+
 ```bash
-# Full CI pipeline (Recommended)
+# Full CI pipeline
 cargo xtask ci --pin-core 2
 
 # Targeted Suites
 cargo xtask bench --suite micro --kind criterion,callgrind
 
+# Advanced Filtering
+cargo xtask bench --implementation avl --operation insert --payload String
+
+# Parallel Execution
+cargo xtask bench --parallel --jobs 8 --aggregate
+
 # Incremental Runs (Only runs changed implementations)
 cargo xtask bench --suite macro --incremental
 ```
+
+### Advanced Filtering Options
+- `--implementation`: Filter by implementation name (e.g., `btree`, `avl`, `skip_list`).
+- `--operation`: Filter by operation (e.g., `insert`, `remove`, `contains`, `union`).
+- `--payload`: Filter by payload type (`u64`, `String`, `LargePayload`).
+- `--distribution`: Filter by distribution (`uniform`, `zipfian`, `sorted`).
+- `--variant`: Filter by memory variant (`safe`, `raw`, `arena`).
 
 ---
 

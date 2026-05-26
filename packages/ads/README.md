@@ -28,7 +28,7 @@ The library is organized by physical memory topology:
 
 ## 🛡️ Memory Management Variants
 
-Pointer-based structures are implemented using three strategies:
+All data structures in the library are implemented using three primary strategies:
 
 1.  **Safe (`safe.rs`)**: Uses standard Rust smart pointers (`Box`, `Rc`, `RefCell`, `Weak`). This variant is 100% safe Rust and serves as the baseline for safety and idiomatic Rust design.
 2.  **Raw (`raw.rs`)**: Uses raw pointers (`*mut T`) and manual memory management (`std::alloc`). This variant explores the performance gains of bypassing runtime safety checks while maintaining structural integrity.
@@ -38,7 +38,10 @@ Pointer-based structures are implemented using three strategies:
 
 ### Purpose Traits ([`traits/core.rs`](./src/traits/core.rs))
 A tiered trait system ensures a unified API across all implementations:
-- `Map<K, V>`, `OrderedMap<K, V>`, `Sequence<T>`, `PriorityQueue<T>`, `DisjointSet<T>`.
+- `Map<K, V>`, `OrderedMap<K, V>`
+- `Sequence<T>`
+- `PriorityQueue<T>`
+- `DisjointSet<T>`
 
 ### Cursor & View Pattern
 To ensure safe navigation without exposing internal pointers, the library utilizes:
@@ -52,6 +55,8 @@ Exposes internal metadata for analytical profiling:
 ## 🧪 Testing & Validation
 
 Safety is paramount, especially for `Raw` and `Arena` variants:
+- **Unit Tests**: Comprehensive coverage for all operations and variants.
+- **Property-Based Testing**: Validates invariants under random workloads.
 - **Miri Validation**: Mathematical proof of the absence of Undefined Behavior, pointer aliasing violations, and memory leaks.
 
 ---

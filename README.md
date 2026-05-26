@@ -19,9 +19,12 @@ The workspace is organized into several key components:
 - **[`packages/ads`](./packages/ads)**: The core library containing the implementations of all data structures and their respective variants. [Read more in the library README](./packages/ads/README.md).
 - **[`packages/ads/benches`](./packages/ads/benches)**: The benchmarking suite utilizing `Criterion.rs`, `Iai-Callgrind`, and `dhat-rs`. [Read more in the benchmarks README](./packages/ads/benches/README.md).
 - **[`frontend`](./frontend)**: An interactive Next.js dashboard to explore the benchmark results.
-    - **Tradeoff Matrix**: 2D scatter plot visualizing Memory vs. Latency.
-    - **Variant Drilldown**: Radar charts comparing Safe/Raw/Arena performance.
-    - **Versus Mode**: Direct head-to-head comparison of up to 4 implementations.
+    - **Tradeoff Matrix**: 2D scatter plot visualizing Memory vs. Latency with logarithmic scaling and outlier detection.
+    - **Leaderboard Table**: High-performance sorting and comparison table with percentage deltas against baselines.
+    - **Inspector Pane**: Comprehensive drilldown into selected implementations, featuring trend analysis and radar charts.
+    - **Profiling Integration**: Deep visibility into deterministic instruction counts (Callgrind) and heap allocations (DHAT).
+    - **Export System**: One-click export to CSV or Markdown for all views and comparisons.
+    - **State Sharing**: Full URL-based state serialization for sharing specific views and filters.
 - **[`xtask`](./xtask)**: A custom automation tool used for running benchmarks, aggregating data, and managing the development lifecycle.
 
 ## 🛠️ Getting Started
@@ -40,9 +43,14 @@ All benchmarking and data aggregation tasks are managed via the `xtask` tool. Fr
 # Run the full CI pipeline: benches all structures, profiles memory, and aggregates data
 cargo xtask ci
 
-# Run specific benchmark suites
-cargo xtask bench --suite micro
-cargo xtask bench --suite macro
+# Run specific benchmark suites with targeted profiling
+cargo xtask bench --suite micro --kind criterion,callgrind
+
+# Advanced Filtering: Run only B-Tree insert benchmarks with u64 payloads
+cargo xtask bench --implementation btree --operation insert --payload u64
+
+# Run benchmarks in parallel (using 4 jobs) and aggregate results
+cargo xtask bench --parallel --jobs 4 --aggregate
 
 # Pin to a single CPU core for consistent results (Linux only)
 cargo xtask ci --pin-core 2
