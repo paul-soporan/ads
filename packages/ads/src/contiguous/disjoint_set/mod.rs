@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod raw;
 pub mod safe;
 
@@ -7,61 +8,20 @@ pub trait DisjointSetVariant<T>:
     DisjointSetTrait<T>
     + DisjointSetDiagnostics<Value = T, SetId = <Self as DisjointSetTrait<T>>::SetId>
 {
-    fn components(&self) -> Vec<(<Self as DisjointSetTrait<T>>::SetId, Vec<T>)>
-    where
-        T: Clone,
-        Self: Sized;
-
-    fn component_views<'a>(&'a self) -> Vec<(Self::View<'a>, Vec<Self::View<'a>>)>
-    where
-        T: Clone + PartialEq,
-        Self: Sized;
 }
 
-impl<T: Clone + PartialEq> DisjointSetVariant<T> for safe::DisjointSet<T> {
-    fn components(&self) -> Vec<(<Self as DisjointSetTrait<T>>::SetId, Vec<T>)>
-    where
-        T: Clone,
-        Self: Sized,
-    {
-        self.components()
-    }
-
-    fn component_views<'a>(&'a self) -> Vec<(Self::View<'a>, Vec<Self::View<'a>>)>
-    where
-        T: Clone + PartialEq,
-        Self: Sized,
-    {
-        self.component_views()
-    }
-}
-
-impl<T: Clone + PartialEq> DisjointSetVariant<T> for raw::DisjointSet<T> {
-    fn components(&self) -> Vec<(<Self as DisjointSetTrait<T>>::SetId, Vec<T>)>
-    where
-        T: Clone,
-        Self: Sized,
-    {
-        self.components()
-    }
-
-    fn component_views<'a>(&'a self) -> Vec<(Self::View<'a>, Vec<Self::View<'a>>)>
-    where
-        T: Clone + PartialEq,
-        Self: Sized,
-    {
-        self.component_views()
-    }
-}
+impl<T: Clone + std::hash::Hash + Eq> DisjointSetVariant<T> for safe::DisjointSet<T> {}
+impl<T: Clone + std::hash::Hash + Eq> DisjointSetVariant<T> for raw::DisjointSet<T> {}
+impl<T: Clone + std::hash::Hash + Eq> DisjointSetVariant<T> for arena::DisjointSet<T> {}
 
 #[cfg(test)]
 macro_rules! test_disjoint_set_variant {
-    ($module:ident, $ds_ty:ty) => {
+    ($module:ident, $ds_ty:ident) => {
         mod $module {
             use super::*;
             use crate::traits::diagnostics::DisjointSetDiagnostics;
 
-            type Ds = $ds_ty;
+            type Ds = $ds_ty::DisjointSet<i32>;
 
             #[test]
             fn make_set_find_and_same_set() {
@@ -152,11 +112,47 @@ macro_rules! test_disjoint_set_variant {
                 assert!(ds.same_set(&2, &4));
                 assert_eq!(ds.component_count(), 3);
             }
+
+            #[test]
+            fn stress_random_operations() {
+                use rand::{Rng, SeedableRng, rngs::StdRng};
+
+                let mut ds = Ds::new();
+                let mut rng = StdRng::seed_from_u64(42);
+                let mut values = Vec::new();
+
+                for _ in 0..1000 {
+                    match rng.gen_range(0..3) {
+                        0 => { // make_set
+                            let val = rng.gen_range(0..2000);
+                            ds.make_set(val);
+                            values.push(val);
+                        }
+                        1 if !values.is_empty() => { // union
+                            let v1 = values[rng.gen_range(0..values.len())];
+                            let v2 = values[rng.gen_range(0..values.len())];
+                            ds.union(&v1, &v2);
+                        }
+                        2 if !values.is_empty() => { // find/same_set
+                            let v1 = values[rng.gen_range(0..values.len())];
+                            let v2 = values[rng.gen_range(0..values.len())];
+                            let _ = ds.same_set(&v1, &v2);
+                        }
+                        _ => {}
+                    }
+                }
+
+                assert!(ds.element_count() > 0);
+                assert!(ds.component_count() > 0);
+                assert!(ds.component_count() <= ds.element_count());
+            }
         }
     };
 }
 
 #[cfg(test)]
-test_disjoint_set_variant!(safe_variant, safe::DisjointSet<i32>);
+test_disjoint_set_variant!(safe_variant, safe);
 #[cfg(test)]
-test_disjoint_set_variant!(raw_variant, raw::DisjointSet<i32>);
+test_disjoint_set_variant!(raw_variant, raw);
+#[cfg(test)]
+test_disjoint_set_variant!(arena_variant, arena);

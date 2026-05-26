@@ -1,441 +1,505 @@
+use std::ptr;
+
 use crate::traits::{core::PriorityQueue, diagnostics::ForestDiagnostics};
 
 #[derive(Debug)]
 struct BinomialNode<T> {
     value: T,
-    index: usize,
+    degree: usize,
+    parent: *mut BinomialNode<T>,
+    child: *mut BinomialNode<T>,
+    sibling: *mut BinomialNode<T>,
 }
 
 impl<T> BinomialNode<T> {
-    fn new(value: T, index: usize) -> Self {
-        Self { value, index }
+    fn new(value: T) -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            value,
+            degree: 0,
+            parent: ptr::null_mut(),
+            child: ptr::null_mut(),
+            sibling: ptr::null_mut(),
+        }))
+    }
+}
+
+unsafe fn drop_node<T>(node: *mut BinomialNode<T>) {
+    if node.is_null() {
+        return;
+    }
+    let mut stack = vec![node];
+    while let Some(curr) = stack.pop() {
+        unsafe {
+            let mut child = (*curr).child;
+            while !child.is_null() {
+                let next = (*child).sibling;
+                stack.push(child);
+                child = next;
+            }
+            drop(Box::from_raw(curr));
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct BinomialNodeView<T> {
-    heap: *const BinomialHeap<T>,
-    node: *mut BinomialNode<T>,
-}
-
-#[derive(Debug)]
-pub struct BinomialNodeCursor<T> {
-    heap: *const BinomialHeap<T>,
     node: *mut BinomialNode<T>,
 }
 
 impl<T> Clone for BinomialNodeView<T> {
     fn clone(&self) -> Self {
-        Self {
-            heap: self.heap,
-            node: self.node,
-        }
-    }
-}
-
-impl<T> Clone for BinomialNodeCursor<T> {
-    fn clone(&self) -> Self {
-        Self {
-            heap: self.heap,
-            node: self.node,
-        }
+        Self { node: self.node }
     }
 }
 
 impl<T> BinomialNodeView<T> {
-    fn heap_ref(&self) -> &BinomialHeap<T> {
-        // SAFETY: heap pointer is set by BinomialHeap methods and remains valid for view usage.
-        unsafe { &*self.heap }
-    }
-
-    fn index(&self) -> usize {
-        // SAFETY: node pointer is valid while the node remains in the heap.
-        unsafe { (*self.node).index }
+    fn node_ref(&self) -> &BinomialNode<T> {
+        unsafe { &*self.node }
     }
 
     pub fn value(&self) -> &T {
-        // SAFETY: node pointer is valid while the node remains in the heap.
-        unsafe { &(*self.node).value }
+        &self.node_ref().value
     }
 
     pub fn degree(&self) -> usize {
-        let len = self.heap_ref().nodes.len();
-        if len == 0 {
-            return 0;
-        }
-
-        let i = self.index();
-        let left = 2 * i + 1;
-        let right = 2 * i + 2;
-
-        usize::from(left < len) + usize::from(right < len)
+        self.node_ref().degree
     }
 
     pub fn child(&self) -> Option<Self> {
-        let heap = self.heap_ref();
-        let left = 2 * self.index() + 1;
-        heap.nodes.get(left).copied().map(|node| Self {
-            heap: self.heap,
-            node,
-        })
+        let child = self.node_ref().child;
+        if child.is_null() {
+            None
+        } else {
+            Some(Self { node: child })
+        }
     }
 
     pub fn sibling(&self) -> Option<Self> {
-        let heap = self.heap_ref();
-        let i = self.index();
-        if i == 0 {
-            return None;
+        let sibling = self.node_ref().sibling;
+        if sibling.is_null() {
+            None
+        } else {
+            Some(Self { node: sibling })
         }
-
-        let sibling_index = if i % 2 == 1 { i + 1 } else { i.saturating_sub(1) };
-        heap.nodes.get(sibling_index).copied().map(|node| Self {
-            heap: self.heap,
-            node,
-        })
     }
 
     pub fn parent(&self) -> Option<Self> {
-        let i = self.index();
-        if i == 0 {
-            return None;
+        let parent = self.node_ref().parent;
+        if parent.is_null() {
+            None
+        } else {
+            Some(Self { node: parent })
         }
+    }
+}
 
-        let parent_index = (i - 1) / 2;
-        self.heap_ref()
-            .nodes
-            .get(parent_index)
-            .copied()
-            .map(|node| Self {
-                heap: self.heap,
-                node,
-            })
+#[derive(Debug)]
+pub struct BinomialNodeCursor<T> {
+    node: *mut BinomialNode<T>,
+}
+
+impl<T> Clone for BinomialNodeCursor<T> {
+    fn clone(&self) -> Self {
+        Self { node: self.node }
     }
 }
 
 impl<T> BinomialNodeCursor<T> {
     pub fn value(&self) -> &T {
-        // SAFETY: node pointer is valid while the node remains in the heap.
         unsafe { &(*self.node).value }
     }
 
     pub fn node_view(&self) -> BinomialNodeView<T> {
-        BinomialNodeView {
-            heap: self.heap,
-            node: self.node,
-        }
-    }
-
-    fn index_hint(&self) -> usize {
-        // SAFETY: node pointer is valid while the node remains in the heap.
-        unsafe { (*self.node).index }
+        BinomialNodeView { node: self.node }
     }
 }
 
 #[derive(Debug)]
 pub struct BinomialHeap<T> {
-    nodes: Vec<*mut BinomialNode<T>>,
+    head: *mut BinomialNode<T>,
+    len: usize,
 }
 
-impl<T: Ord> BinomialHeap<T> {
+impl<T> BinomialHeap<T> {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
-    }
-
-    fn view_for_index(&self, index: usize) -> Option<BinomialNodeView<T>> {
-        self.nodes.get(index).copied().map(|node| BinomialNodeView {
-            heap: self as *const Self,
-            node,
-        })
-    }
-
-    fn cursor_for_index(&self, index: usize) -> Option<BinomialNodeCursor<T>> {
-        self.nodes.get(index).copied().map(|node| BinomialNodeCursor {
-            heap: self as *const Self,
-            node,
-        })
-    }
-
-    fn update_index(ptr: *mut BinomialNode<T>, index: usize) {
-        // SAFETY: ptr comes from Box::into_raw and points to a valid node.
-        unsafe {
-            (*ptr).index = index;
+        Self {
+            head: ptr::null_mut(),
+            len: 0,
         }
-    }
-
-    fn swap_nodes(&mut self, i: usize, j: usize) {
-        self.nodes.swap(i, j);
-        Self::update_index(self.nodes[i], i);
-        Self::update_index(self.nodes[j], j);
-    }
-
-    fn sift_up(&mut self, mut index: usize) {
-        while index > 0 {
-            let parent = (index - 1) / 2;
-
-            let should_swap = {
-                // SAFETY: indices are in-bounds and node pointers are valid.
-                unsafe { (*self.nodes[index]).value < (*self.nodes[parent]).value }
-            };
-
-            if !should_swap {
-                break;
-            }
-
-            self.swap_nodes(index, parent);
-            index = parent;
-        }
-    }
-
-    fn sift_down(&mut self, mut index: usize) {
-        let len = self.nodes.len();
-        loop {
-            let left = 2 * index + 1;
-            let right = 2 * index + 2;
-            let mut smallest = index;
-
-            if left < len {
-                let left_smaller = {
-                    // SAFETY: indices are in-bounds and node pointers are valid.
-                    unsafe { (*self.nodes[left]).value < (*self.nodes[smallest]).value }
-                };
-                if left_smaller {
-                    smallest = left;
-                }
-            }
-
-            if right < len {
-                let right_smaller = {
-                    // SAFETY: indices are in-bounds and node pointers are valid.
-                    unsafe { (*self.nodes[right]).value < (*self.nodes[smallest]).value }
-                };
-                if right_smaller {
-                    smallest = right;
-                }
-            }
-
-            if smallest == index {
-                break;
-            }
-
-            self.swap_nodes(index, smallest);
-            index = smallest;
-        }
-    }
-
-    fn heapify(&mut self) {
-        if self.nodes.len() <= 1 {
-            return;
-        }
-
-        for idx in (0..=(self.nodes.len() / 2)).rev() {
-            self.sift_down(idx);
-        }
-    }
-
-    fn remove_index(&mut self, index: usize) -> Option<T> {
-        if index >= self.nodes.len() {
-            return None;
-        }
-
-        let last = self.nodes.len() - 1;
-        self.swap_nodes(index, last);
-
-        let removed = self.nodes.pop()?;
-
-        if index < self.nodes.len() {
-            if index > 0 {
-                let parent = (index - 1) / 2;
-                let should_sift_up = {
-                    // SAFETY: indices are valid and pointers are valid.
-                    unsafe { (*self.nodes[index]).value < (*self.nodes[parent]).value }
-                };
-
-                if should_sift_up {
-                    self.sift_up(index);
-                } else {
-                    self.sift_down(index);
-                }
-            } else {
-                self.sift_down(index);
-            }
-        }
-
-        // SAFETY: removed was allocated via Box::into_raw and is no longer referenced by self.nodes.
-        let removed_box = unsafe { Box::from_raw(removed) };
-        Some(removed_box.value)
-    }
-
-    fn index_of_cursor(&self, cursor: &BinomialNodeCursor<T>) -> Option<usize> {
-        let hinted = cursor.index_hint();
-        if let Some(node) = self.nodes.get(hinted).copied() {
-            if node == cursor.node {
-                return Some(hinted);
-            }
-        }
-
-        self.nodes.iter().position(|node| *node == cursor.node)
-    }
-
-    pub fn head_view(&self) -> Option<BinomialNodeView<T>> {
-        self.view_for_index(0)
-    }
-
-    pub fn roots(&self) -> Vec<BinomialNodeView<T>> {
-        self.head_view().into_iter().collect()
     }
 
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.len == 0
     }
 
     pub fn clear(&mut self) {
-        while let Some(node) = self.nodes.pop() {
-            // SAFETY: every pointer in self.nodes comes from Box::into_raw and is unique.
-            unsafe {
-                drop(Box::from_raw(node));
+        unsafe {
+            let mut curr = self.head;
+            while !curr.is_null() {
+                let next = (*curr).sibling;
+                drop_node(curr);
+                curr = next;
             }
+        }
+        self.head = ptr::null_mut();
+        self.len = 0;
+    }
+}
+
+impl<T: Ord> BinomialHeap<T> {
+    fn link(child: *mut BinomialNode<T>, parent: *mut BinomialNode<T>) {
+        unsafe {
+            (*child).parent = parent;
+            (*child).sibling = (*parent).child;
+            (*parent).child = child;
+            (*parent).degree += 1;
+        }
+    }
+
+    fn merge_root_lists(mut h1: *mut BinomialNode<T>, mut h2: *mut BinomialNode<T>) -> *mut BinomialNode<T> {
+        let mut head = ptr::null_mut();
+        let mut tail = &mut head;
+
+        unsafe {
+            while !h1.is_null() && !h2.is_null() {
+                if (*h1).degree <= (*h2).degree {
+                    let next = (*h1).sibling;
+                    *tail = h1;
+                    h1 = next;
+                } else {
+                    let next = (*h2).sibling;
+                    *tail = h2;
+                    h2 = next;
+                }
+                (*(*tail)).sibling = ptr::null_mut();
+                tail = &mut (*(*tail)).sibling;
+            }
+
+            if !h1.is_null() {
+                *tail = h1;
+            } else {
+                *tail = h2;
+            }
+        }
+        head
+    }
+
+    pub fn merge(&mut self, other: &mut Self) {
+        if other.head.is_null() {
+            return;
+        }
+        if self.head.is_null() {
+            self.head = other.head;
+            self.len = other.len;
+            other.head = ptr::null_mut();
+            other.len = 0;
+            return;
+        }
+
+        let total_len = self.len + other.len;
+        let mut head = Self::merge_root_lists(self.head, other.head);
+        self.head = ptr::null_mut();
+        other.head = ptr::null_mut();
+
+        if head.is_null() {
+            self.len = 0;
+            other.len = 0;
+            return;
+        }
+
+        unsafe {
+            let mut prev = ptr::null_mut();
+            let mut x = head;
+            let mut next = (*x).sibling;
+
+            while !next.is_null() {
+                let n_next = (*next).sibling;
+                if (*x).degree != (*next).degree || (!n_next.is_null() && (*n_next).degree == (*x).degree) {
+                    prev = x;
+                    x = next;
+                } else if (*x).value <= (*next).value {
+                    (*x).sibling = n_next;
+                    Self::link(next, x);
+                } else {
+                    if prev.is_null() {
+                        head = next;
+                    } else {
+                        (*prev).sibling = next;
+                    }
+                    Self::link(x, next);
+                    x = next;
+                }
+                next = (*x).sibling;
+            }
+        }
+
+        self.head = head;
+        self.len = total_len;
+        other.len = 0;
+    }
+
+    pub fn insert(&mut self, value: T) {
+        let mut singleton = Self {
+            head: BinomialNode::new(value),
+            len: 1,
+        };
+        self.merge(&mut singleton);
+    }
+
+    pub fn extract_min(&mut self) -> Option<T> {
+        if self.head.is_null() {
+            return None;
+        }
+
+        let mut min_node = self.head;
+        let mut min_prev = ptr::null_mut();
+        
+        unsafe {
+            let mut curr = (*self.head).sibling;
+            let mut prev = self.head;
+
+            while !curr.is_null() {
+                if (*curr).value < (*min_node).value {
+                    min_node = curr;
+                    min_prev = prev;
+                }
+                prev = curr;
+                curr = (*curr).sibling;
+            }
+
+            if min_prev.is_null() {
+                self.head = (*min_node).sibling;
+            } else {
+                (*min_prev).sibling = (*min_node).sibling;
+            }
+
+            let mut child = (*min_node).child;
+            let mut new_head = ptr::null_mut();
+            while !child.is_null() {
+                let next = (*child).sibling;
+                (*child).parent = ptr::null_mut();
+                (*child).sibling = new_head;
+                new_head = child;
+                child = next;
+            }
+
+            let mut child_heap = Self {
+                head: new_head,
+                len: 0,
+            };
+            let old_len = self.len;
+            self.merge(&mut child_heap);
+            self.len = old_len.saturating_sub(1);
+
+            let node_box = Box::from_raw(min_node);
+            Some(node_box.value)
+        }
+    }
+
+    pub fn min(&self) -> Option<BinomialNodeCursor<T>> {
+        if self.head.is_null() {
+            return None;
+        }
+        let mut min_node = self.head;
+        unsafe {
+            let mut curr = (*self.head).sibling;
+            while !curr.is_null() {
+                if (*curr).value < (*min_node).value {
+                    min_node = curr;
+                }
+                curr = (*curr).sibling;
+            }
+        }
+        Some(BinomialNodeCursor { node: min_node })
+    }
+
+    pub fn decrease_key(&mut self, handle: BinomialNodeCursor<T>, new_value: T) {
+        let node = handle.node;
+        unsafe {
+            if new_value > (*node).value {
+                panic!("decrease_key received a larger replacement value");
+            }
+            (*node).value = new_value;
+
+            let mut curr = node;
+            let mut parent = (*curr).parent;
+            while !parent.is_null() && (*curr).value < (*parent).value {
+                std::mem::swap(&mut (*curr).value, &mut (*parent).value);
+                curr = parent;
+                parent = (*curr).parent;
+            }
+        }
+    }
+
+    pub fn delete(&mut self, handle: BinomialNodeCursor<T>) -> Option<T> {
+        let node = handle.node;
+        unsafe {
+            let mut curr = node;
+            let mut parent = (*curr).parent;
+            while !parent.is_null() {
+                std::mem::swap(&mut (*curr).value, &mut (*parent).value);
+                curr = parent;
+                parent = (*curr).parent;
+            }
+
+            let target = curr;
+            let mut prev = ptr::null_mut();
+            let mut r = self.head;
+            while !r.is_null() && r != target {
+                prev = r;
+                r = (*r).sibling;
+            }
+
+            if r.is_null() {
+                return None;
+            }
+
+            if prev.is_null() {
+                self.head = (*r).sibling;
+            } else {
+                (*prev).sibling = (*r).sibling;
+            }
+
+            let mut child = (*r).child;
+            let mut new_head = ptr::null_mut();
+            while !child.is_null() {
+                let next = (*child).sibling;
+                (*child).parent = ptr::null_mut();
+                (*child).sibling = new_head;
+                new_head = child;
+                child = next;
+            }
+
+            let mut child_heap = Self {
+                head: new_head,
+                len: 0,
+            };
+            let old_len = self.len;
+            self.merge(&mut child_heap);
+            self.len = old_len.saturating_sub(1);
+
+            let node_box = Box::from_raw(r);
+            Some(node_box.value)
         }
     }
 
     pub fn search(&self, value: &T) -> Option<BinomialNodeCursor<T>> {
-        self.nodes
-            .iter()
-            .position(|node| {
-                // SAFETY: pointers in self.nodes are valid.
-                unsafe { (**node).value == *value }
-            })
-            .and_then(|index| self.cursor_for_index(index))
-    }
-
-    pub fn min(&self) -> Option<BinomialNodeCursor<T>> {
-        self.cursor_for_index(0)
-    }
-
-    pub fn insert(&mut self, value: T) {
-        let index = self.nodes.len();
-        let node = Box::into_raw(Box::new(BinomialNode::new(value, index)));
-        self.nodes.push(node);
-        self.sift_up(index);
-    }
-
-    pub fn merge(&mut self, other: &mut Self) {
-        for node in other.nodes.drain(..) {
-            let index = self.nodes.len();
-            Self::update_index(node, index);
-            self.nodes.push(node);
+        if self.head.is_null() {
+            return None;
         }
-        self.heapify();
-    }
-
-    pub fn extract_min(&mut self) -> Option<T> {
-        self.remove_index(0)
-    }
-
-    pub fn decrease_key(&mut self, handle: BinomialNodeCursor<T>, new_value: T) {
-        let Some(index) = self.index_of_cursor(&handle) else {
-            return;
-        };
-
-        let should_panic = {
-            // SAFETY: index points to a valid node in self.nodes.
-            unsafe { new_value > (*self.nodes[index]).value }
-        };
-
-        if should_panic {
-            panic!("decrease_key received a larger replacement value");
-        }
-
-        // SAFETY: index points to a valid node in self.nodes.
+        let mut stack = vec![self.head];
         unsafe {
-            (*self.nodes[index]).value = new_value;
+            while let Some(root_list_start) = stack.pop() {
+                let mut curr = root_list_start;
+                while !curr.is_null() {
+                    if (*curr).value == *value {
+                        return Some(BinomialNodeCursor { node: curr });
+                    }
+                    if (*curr).value < *value {
+                        let child = (*curr).child;
+                        if !child.is_null() {
+                            stack.push(child);
+                        }
+                    }
+                    curr = (*curr).sibling;
+                }
+            }
         }
-        self.sift_up(index);
+        None
     }
 
-    pub fn delete(&mut self, handle: BinomialNodeCursor<T>) -> Option<T> {
-        let index = self.index_of_cursor(&handle)?;
-        self.remove_index(index)
+    pub fn head_view(&self) -> Option<BinomialNodeView<T>> {
+        if self.head.is_null() {
+            None
+        } else {
+            Some(BinomialNodeView { node: self.head })
+        }
     }
 
-    pub fn delete_value(&mut self, value: &T) -> Option<T> {
-        let cursor = self.search(value)?;
-        self.delete(cursor)
+    pub fn roots(&self) -> Vec<BinomialNodeView<T>> {
+        let mut roots = Vec::new();
+        let mut curr = self.head;
+        while !curr.is_null() {
+            roots.push(BinomialNodeView { node: curr });
+            unsafe {
+                curr = (*curr).sibling;
+            }
+        }
+        roots
     }
 }
 
 impl<T> Drop for BinomialHeap<T> {
     fn drop(&mut self) {
-        while let Some(node) = self.nodes.pop() {
-            // SAFETY: every pointer in self.nodes comes from Box::into_raw and is unique.
-            unsafe {
-                drop(Box::from_raw(node));
-            }
-        }
+        self.clear();
     }
 }
 
 impl<T: Ord> PriorityQueue<T> for BinomialHeap<T> {
-    type Cursor<'a>
-        = BinomialNodeCursor<T>
-    where
-        Self: 'a;
-
-    type View<'a>
-        = BinomialNodeView<T>
-    where
-        Self: 'a;
+    type Cursor<'a> = BinomialNodeCursor<T> where Self: 'a;
+    type View<'a> = BinomialNodeView<T> where Self: 'a;
 
     fn push(&mut self, value: T) {
-        BinomialHeap::insert(self, value)
+        self.insert(value)
     }
 
     fn pop(&mut self) -> Option<T> {
-        BinomialHeap::extract_min(self)
+        self.extract_min()
     }
 
     fn peek<'a>(&'a self) -> Option<Self::Cursor<'a>> {
-        BinomialHeap::min(self)
+        self.min()
     }
 
     fn cursor<'a>(&'a self, value: &T) -> Option<Self::Cursor<'a>> {
-        BinomialHeap::search(self, value)
+        self.search(value)
     }
 
     fn view_from_cursor<'a>(&'a self, cursor: &Self::Cursor<'a>) -> Self::View<'a> {
         cursor.node_view()
     }
 
-    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T>
-    where
-        T: 'a,
-    {
-        BinomialHeap::delete(self, cursor)
-    }
+    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T> where T: 'a { self.delete(cursor) }
+    fn merge(&mut self, other: &mut Self) { self.merge(other) }
+    fn clear(&mut self) { self.clear() }
 
-    fn clear(&mut self) {
-        BinomialHeap::clear(self)
-    }
 
     fn len(&self) -> usize {
-        BinomialHeap::len(self)
+        self.len
     }
 }
 
 impl<T: Ord> ForestDiagnostics for BinomialHeap<T> {
     fn root_count(&self) -> usize {
-        usize::from(!self.is_empty())
+        let mut count = 0;
+        let mut curr = self.head;
+        while !curr.is_null() {
+            count += 1;
+            unsafe {
+                curr = (*curr).sibling;
+            }
+        }
+        count
     }
 
     fn node_count(&self) -> usize {
-        self.len()
+        self.len
     }
 
     fn max_root_degree(&self) -> usize {
-        self.head_view().map_or(0, |root| root.degree())
+        let mut max_degree = 0;
+        let mut curr = self.head;
+        while !curr.is_null() {
+            unsafe {
+                max_degree = max_degree.max((*curr).degree);
+                curr = (*curr).sibling;
+            }
+        }
+        max_degree
     }
 }
 

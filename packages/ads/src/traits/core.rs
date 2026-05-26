@@ -69,12 +69,10 @@ impl<T> SequenceMutGuard<T> for &mut T {
         f(self)
     }
 }
-
 pub trait Sequence<T> {
-    type Cursor<'a>
+    type Cursor<'a>: SequenceCursor + Clone
     where
         Self: 'a;
-
     type MutView<'a>: SequenceMutGuard<T>
     where
         Self: 'a,
@@ -84,8 +82,10 @@ pub trait Sequence<T> {
     fn push_back(&mut self, value: T);
     fn pop_front(&mut self) -> Option<T>;
     fn pop_back(&mut self) -> Option<T>;
+
     fn cursor_at<'a>(&'a self, index: usize) -> Option<Self::Cursor<'a>>;
     fn get_mut<'a>(&'a mut self, index: usize) -> Option<Self::MutView<'a>>;
+
     fn clear(&mut self);
     fn len(&self) -> usize;
 
@@ -93,6 +93,11 @@ pub trait Sequence<T> {
         self.len() == 0
     }
 }
+
+pub trait SequenceCursor {
+    fn index(&self) -> usize;
+}
+
 
 pub trait PriorityQueue<T> {
     type Cursor<'a>: Clone
@@ -111,6 +116,7 @@ pub trait PriorityQueue<T> {
     fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T>
     where
         T: 'a;
+    fn merge(&mut self, other: &mut Self);
     fn clear(&mut self);
     fn len(&self) -> usize;
 

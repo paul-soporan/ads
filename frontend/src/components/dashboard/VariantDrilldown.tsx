@@ -18,24 +18,23 @@ import {
 } from "recharts";
 
 import { AppGlassPanel } from "@/components/ui/AppGlassPanel";
-import { buildImplementationAggregates, formatBytes } from "@/lib/bench/analytics";
+import {
+  buildImplementationAggregates,
+  buildVariantRadarMetrics,
+  formatBytes,
+  type VariantRadarMetric,
+} from "@/lib/bench/analytics";
 import { CHART_COLORS, VARIANT_COLORS as GLOBAL_VARIANT_COLORS } from "@/lib/bench/visualTokens";
 import type { CriterionRecord, NormalizedBenchmarkDataset } from "@/lib/bench/types";
 
 interface VariantDrilldownProps {
-  records: CriterionRecord[];
+  snapshotRecords: CriterionRecord[];
+  trendRecords: CriterionRecord[];
   dataset: NormalizedBenchmarkDataset;
   selectedImplementations: string[];
 }
 
 type VariantKey = "safe" | "raw" | "arena";
-
-type RadarDatum = {
-  axis: string;
-  safe: number | null;
-  raw: number | null;
-  arena: number | null;
-};
 
 const VARIANT_COLORS: Record<VariantKey, string> = {
   safe: GLOBAL_VARIANT_COLORS.safe,
@@ -55,17 +54,6 @@ function familyKey(implementation: string): string {
     .replace(/_t\d+$/g, "");
 }
 
-function normalizeSpeed(value: number, min: number, max: number): number {
-  if (max <= min) return 1;
-  const normalized = (value - min) / (max - min);
-  return 1 - normalized;
-}
-
-function scoreOrNull(value: number | null, min: number, max: number): number | null {
-  if (value == null) return null;
-  return normalizeSpeed(value, min, max);
-}
-
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
@@ -80,6 +68,10 @@ function formatCompactTick(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(0)}k`;
   return Math.round(value).toLocaleString();
+}
+
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(3)}%`;
 }
 
 type LatencyScale = {
@@ -108,19 +100,8 @@ function formatLatencyTickWithScale(valueNs: number, scale: LatencyScale): strin
   return scaled.toFixed(2);
 }
 
-function cacheMissRate(metrics?: {
-  Dr?: number;
-  Dw?: number;
-  D1mr?: number;
-  D1mw?: number;
-}): number | null {
-  if (!metrics) return null;
-  const reads = metrics.Dr ?? 0;
-  const writes = metrics.Dw ?? 0;
-  const misses = (metrics.D1mr ?? 0) + (metrics.D1mw ?? 0);
-  const accesses = reads + writes;
-  if (accesses <= 0) return null;
-  return misses / accesses;
+function formatVariantLabel(variant: VariantKey): string {
+  return variant[0].toUpperCase() + variant.slice(1);
 }
 
 function variantFromImplementation(implementation: string): VariantKey | null {
@@ -131,53 +112,40 @@ function variantFromImplementation(implementation: string): VariantKey | null {
   return null;
 }
 
-function computeRange(values: number[], fallbackMin = 0, fallbackMax = 1): { min: number; max: number } {
-  const finite = values.filter((value) => Number.isFinite(value));
-  if (finite.length === 0) {
-    return {
-      min: fallbackMin,
-      max: fallbackMax > fallbackMin ? fallbackMax : fallbackMin + 1,
-    };
+function formatRadarRawValue(metric: VariantRadarMetric, value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+
+  switch (metric.formatter) {
+    case "latency_ns": {
+      const scale = pickLatencyScale(value);
+      return formatLatencyWithScale(value, scale);
+    }
+    case "ratio":
+      return `${(value * 100).toFixed(2)}%`;
+    case "bytes_per_element":
+      return `${value >= 1024 ? formatBytes(value) : `${value.toFixed(2)} B`}/elem`;
+    case "instructions_per_element":
+      return `${value >= 1000 ? formatCompactTick(value) : value.toFixed(2)} Ir/elem`;
+    case "allocation_ratio":
+      return `${value.toFixed(2)}x`;
+    default:
+      return value.toFixed(2);
   }
-
-  const min = Math.min(...finite);
-  const max = Math.max(...finite);
-
-  if (max <= min) {
-    return { min, max: min + 1 };
-  }
-
-  return { min, max };
 }
 
-function metricValuesForVariants(
-  variants: VariantKey[],
-  getValue: (variant: VariantKey) => number | null,
-): Array<number | null> {
-  return variants.map((variant) => {
-    const value = getValue(variant);
-    return value != null && Number.isFinite(value) ? value : null;
-  });
+function formatRadarBand(value: number): string {
+  const score = clamp01(value);
+  if (score >= 0.8) return "Leading";
+  if (score >= 0.62) return "Strong";
+  if (score >= 0.38) return "Mid-pack";
+  return "Trailing";
 }
 
-function allVariantsHaveMetric(values: Array<number | null>): values is number[] {
-  return values.every((value) => value != null);
-}
-
-function formatOperationAxis(operation: string): string {
-  if (operation === "push_pop") return "Push/Pop Latency";
-  if (operation === "contains") return "Contains Latency";
-  if (operation === "contains_zipf") return "Contains Latency (Zipf)";
-  if (operation === "contains_temporal") return "Contains Latency (Temporal)";
-  if (operation === "contains_mixed") return "Contains Latency (Mixed)";
-  if (operation === "bulk_insert") return "Bulk Insert Latency";
-
-  const base = operation
-    .split("_")
-    .map((part) => (part.length > 0 ? part[0].toUpperCase() + part.slice(1) : part))
-    .join(" ");
-
-  return `${base} Latency`;
+function rawMetricValueForVariant(metric: VariantRadarMetric, variant: string | undefined): number | null {
+  if (variant === "safe") return metric.safeRaw;
+  if (variant === "raw") return metric.rawRaw;
+  if (variant === "arena") return metric.arenaRaw;
+  return null;
 }
 
 function RadarTooltipContent({
@@ -186,7 +154,7 @@ function RadarTooltipContent({
   label,
 }: {
   active?: boolean;
-  payload?: Array<{ name?: string; value?: number; color?: string }>;
+  payload?: Array<{ name?: string; value?: number; color?: string; payload?: VariantRadarMetric }>;
   label?: string;
 }) {
   if (!active || !payload || payload.length === 0) return null;
@@ -194,9 +162,13 @@ function RadarTooltipContent({
   const rows = payload.filter((entry) => typeof entry.value === "number");
   if (rows.length === 0) return null;
 
+  const metric = rows[0]?.payload;
+  if (!metric) return null;
+
   return (
-    <div className="min-w-[220px] rounded-lg border border-panel-border bg-panel/95 px-3 py-2.5 shadow-panel backdrop-blur-[8px]">
+    <div className="min-w-[280px] rounded-lg border border-panel-border bg-panel/95 px-3 py-2.5 shadow-panel backdrop-blur-[8px]">
       <p className="text-xs uppercase tracking-[0.1em] text-text-muted">{label}</p>
+      <p className="mt-1 text-xs text-text-muted">{metric.description}</p>
       <div className="mt-2 space-y-1.5">
         {rows.map((entry) => (
           <div key={entry.name} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 text-sm">
@@ -206,11 +178,25 @@ function RadarTooltipContent({
               aria-hidden="true"
             />
             <span className="capitalize text-text">{entry.name}</span>
-            <span className="font-mono text-text-muted">{formatRadarScore(entry.value ?? 0)}</span>
+            <div className="text-right">
+              <p className="font-mono text-text-muted">{formatRadarScore(entry.value ?? 0)}</p>
+              <p className="font-mono text-[11px] text-text-muted/80">
+                {formatRadarRawValue(metric, rawMetricValueForVariant(metric, entry.name))}
+              </p>
+            </div>
           </div>
         ))}
       </div>
-      <p className="mt-2 text-[11px] text-text-muted">Relative metric score. Higher is better.</p>
+      <div className="mt-2 space-y-1 text-[11px] text-text-muted">
+        <p>
+          {metric.lowerIsBetter ? "Lower raw values score higher." : "Higher raw values score higher."} Scores are smoothed against the visible workload context.
+        </p>
+        <p>
+          Context median: <span className="font-mono">{formatRadarRawValue(metric, metric.contextMedian)}</span>
+          {metric.contextCount > 0 ? ` across ${metric.contextCount} implementations` : ""}.
+        </p>
+        <p>Band: <span className="font-mono">{formatRadarBand(rows[0]?.value ?? 0)}</span></p>
+      </div>
     </div>
   );
 }
@@ -288,17 +274,87 @@ function LineTooltipContent({
   );
 }
 
-function VariantDrilldownInner({ records, dataset, selectedImplementations }: VariantDrilldownProps) {
-  const aggregates = useMemo(() => buildImplementationAggregates(records, dataset), [dataset, records]);
+function ProfilingTooltipContent({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ dataKey?: string; value?: number; color?: string }>;
+  label?: string | number;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const rows = new Map<VariantKey, { ir: number | null; miss: number | null; color: string }>();
+  const ensure = (variant: VariantKey): { ir: number | null; miss: number | null; color: string } => {
+    const existing = rows.get(variant);
+    if (existing) return existing;
+    const created = { ir: null, miss: null, color: VARIANT_COLORS[variant] };
+    rows.set(variant, created);
+    return created;
+  };
+
+  for (const entry of payload) {
+    const key = entry.dataKey;
+    if (!key) continue;
+
+    for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
+      if (key === `${variant}Ir`) {
+        const row = ensure(variant);
+        row.ir = typeof entry.value === "number" ? entry.value : null;
+        if (entry.color) row.color = entry.color;
+      }
+
+      if (key === `${variant}Miss`) {
+        const row = ensure(variant);
+        row.miss = typeof entry.value === "number" ? entry.value : null;
+        if (entry.color) row.color = entry.color;
+      }
+    }
+  }
+
+  const ordered = (["safe", "raw", "arena"] as VariantKey[])
+    .map((variant) => ({ variant, ...rows.get(variant) }))
+    .filter((row) => row.ir != null || row.miss != null);
+
+  if (ordered.length === 0) return null;
+
+  const sizeLabel = typeof label === "number" ? formatCompactTick(label) : String(label ?? "");
+
+  return (
+    <div className="min-w-[260px] rounded-lg border border-panel-border bg-panel/95 px-3 py-2.5 shadow-panel backdrop-blur-[8px]">
+      <p className="text-xs uppercase tracking-[0.1em] text-text-muted">Input Size</p>
+      <p className="font-mono text-sm text-text">{sizeLabel}</p>
+      <div className="mt-2 space-y-1.5">
+        {ordered.map((row) => (
+          <div key={row.variant} className="space-y-0.5">
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 text-sm">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.color }} aria-hidden="true" />
+              <span className="capitalize text-text">{row.variant}</span>
+              <span className="font-mono text-text-muted">Ir {row.ir != null ? formatCompactTick(row.ir) : "n/a"}</span>
+            </div>
+            <p className="pl-4 text-xs text-text-muted">L1 miss {row.miss != null ? formatPercent(row.miss) : "n/a"}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VariantDrilldownInner({ snapshotRecords, trendRecords, dataset, selectedImplementations }: VariantDrilldownProps) {
+  const snapshotAggregates = useMemo(
+    () => buildImplementationAggregates(snapshotRecords, dataset),
+    [dataset, snapshotRecords],
+  );
 
   const focusImplementation =
     selectedImplementations[0] ??
-    aggregates.find((item) => item.variant === "safe")?.implementation ??
-    aggregates[0]?.implementation;
+    snapshotAggregates.find((item) => item.variant === "safe")?.implementation ??
+    snapshotAggregates[0]?.implementation;
 
   const focusFamily = focusImplementation ? familyKey(focusImplementation) : "";
 
-  const variantRows = aggregates.filter((item) => {
+  const variantRows = snapshotAggregates.filter((item) => {
     const key = familyKey(item.implementation);
     return key === focusFamily && (item.variant === "safe" || item.variant === "raw" || item.variant === "arena");
   });
@@ -314,176 +370,20 @@ function VariantDrilldownInner({ records, dataset, selectedImplementations }: Va
 
   const familyRecords = useMemo(
     () =>
-      records.filter(
+      trendRecords.filter(
         (record) =>
           familyKey(record.implementation) === focusFamily &&
           (record.variant === "safe" || record.variant === "raw" || record.variant === "arena"),
       ),
-    [focusFamily, records],
+    [focusFamily, trendRecords],
   );
 
-  const callgrindCoverage = useMemo(() => {
-    const availableSizes = new Set<number>(familyRecords.map((record) => record.size));
-    const byVariant = new Map<VariantKey, Set<number>>([
-      ["safe", new Set<number>()],
-      ["raw", new Set<number>()],
-      ["arena", new Set<number>()],
-    ]);
-
-    for (const row of dataset.callgrind) {
-      if (familyKey(row.implementation) !== focusFamily) continue;
-      const variant = variantFromImplementation(row.implementation);
-      if (!variant) continue;
-      byVariant.get(variant)?.add(row.size);
-    }
-
-    return {
-      totalSizes: availableSizes.size,
-      safe: byVariant.get("safe")?.size ?? 0,
-      raw: byVariant.get("raw")?.size ?? 0,
-      arena: byVariant.get("arena")?.size ?? 0,
-    };
-  }, [dataset.callgrind, familyRecords, focusFamily]);
-
-  const speedValues = variantRows.map((item) => item.meanNs);
-  const memoryValues = variantRows.map((item) => item.estimatedMemoryBytes);
-
-  const cacheEfficiencyByVariant = new Map<VariantKey, number>();
-  for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
-    const rate = cacheMissRate(variantByType.get(variant)?.callgrind);
-    if (rate != null) {
-      cacheEfficiencyByVariant.set(variant, 1 - rate);
-    }
-  }
-
-  const cacheEfficiencyValues = [...cacheEfficiencyByVariant.values()];
-  const jitterValues = variantRows.map((item) => item.stdDevNs);
-
-  const speedRange = computeRange(speedValues, 0, 1);
-  const memoryRange = computeRange(memoryValues, 0, 1);
-  const jitterRange = computeRange(jitterValues, 0, 1);
-
-  const operationByVariant = useMemo(() => {
-    const operationCounts = new Map<string, number>();
-    const variantBuckets = new Map<VariantKey, Map<string, { sum: number; count: number }>>();
-
-    for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
-      variantBuckets.set(variant, new Map<string, { sum: number; count: number }>());
-    }
-
-    for (const record of familyRecords) {
-      const variant = record.variant as VariantKey;
-      const operation = record.operation;
-      operationCounts.set(operation, (operationCounts.get(operation) ?? 0) + 1);
-
-      const bucket = variantBuckets.get(variant);
-      if (!bucket) continue;
-      const current = bucket.get(operation) ?? { sum: 0, count: 0 };
-      current.sum += record.meanNs;
-      current.count += 1;
-      bucket.set(operation, current);
-    }
-
-    const means = new Map<VariantKey, Map<string, number>>();
-    for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
-      const bucket = variantBuckets.get(variant) ?? new Map<string, { sum: number; count: number }>();
-      const values = new Map<string, number>();
-      for (const [operation, stats] of bucket.entries()) {
-        if (stats.count > 0) values.set(operation, stats.sum / stats.count);
-      }
-      means.set(variant, values);
-    }
-
-    const topOperations = [...operationCounts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 2)
-      .map(([operation]) => operation);
-
-    return {
-      means,
-      topOperations,
-    };
-  }, [familyRecords]);
-
-  const radarData: RadarDatum[] = [];
-  const omittedRadarAxes: string[] = [];
-
-  for (const operation of operationByVariant.topOperations) {
-    const perVariantValues = metricValuesForVariants(
-      availableVariants,
-      (variant) => operationByVariant.means.get(variant)?.get(operation) ?? null,
-    );
-
-    if (!allVariantsHaveMetric(perVariantValues)) {
-      omittedRadarAxes.push(`${formatOperationAxis(operation)} (incomplete variant coverage)`);
-      continue;
-    }
-
-    const values = perVariantValues;
-
-    const range = computeRange(values, speedRange.min, speedRange.max);
-    radarData.push({
-      axis: `${formatOperationAxis(operation)} Score`,
-      safe: scoreOrNull(operationByVariant.means.get("safe")?.get(operation) ?? null, range.min, range.max),
-      raw: scoreOrNull(operationByVariant.means.get("raw")?.get(operation) ?? null, range.min, range.max),
-      arena: scoreOrNull(operationByVariant.means.get("arena")?.get(operation) ?? null, range.min, range.max),
-    });
-  }
-
-  if (radarData.length === 0) {
-    radarData.push({
-      axis: "Mean Latency Score",
-      safe: scoreOrNull(variantByType.get("safe")?.meanNs ?? null, speedRange.min, speedRange.max),
-      raw: scoreOrNull(variantByType.get("raw")?.meanNs ?? null, speedRange.min, speedRange.max),
-      arena: scoreOrNull(variantByType.get("arena")?.meanNs ?? null, speedRange.min, speedRange.max),
-    });
-  }
-
-  {
-    const memoryPerVariant = metricValuesForVariants(
-      availableVariants,
-      (variant) => variantByType.get(variant)?.estimatedMemoryBytes ?? null,
-    );
-
-    if (allVariantsHaveMetric(memoryPerVariant)) {
-      radarData.push({
-        axis: "Memory Efficiency Score",
-        safe: scoreOrNull(variantByType.get("safe")?.estimatedMemoryBytes ?? null, memoryRange.min, memoryRange.max),
-        raw: scoreOrNull(variantByType.get("raw")?.estimatedMemoryBytes ?? null, memoryRange.min, memoryRange.max),
-        arena: scoreOrNull(variantByType.get("arena")?.estimatedMemoryBytes ?? null, memoryRange.min, memoryRange.max),
-      });
-    } else {
-      omittedRadarAxes.push("Memory (incomplete variant coverage)");
-    }
-  }
-
-  if (cacheEfficiencyValues.length > 0) {
-    const cachePerVariant = metricValuesForVariants(availableVariants, (variant) => cacheEfficiencyByVariant.get(variant) ?? null);
-    if (allVariantsHaveMetric(cachePerVariant)) {
-      radarData.push({
-        axis: "L1 Hit-Rate Score",
-        safe: clamp01(cacheEfficiencyByVariant.get("safe") ?? 0),
-        raw: clamp01(cacheEfficiencyByVariant.get("raw") ?? 0),
-        arena: clamp01(cacheEfficiencyByVariant.get("arena") ?? 0),
-      });
-    } else {
-      omittedRadarAxes.push("L1 Hit Rate (missing callgrind coverage)");
-    }
-  }
-
-  if (jitterValues.length >= 2) {
-    const jitterPerVariant = metricValuesForVariants(availableVariants, (variant) => variantByType.get(variant)?.stdDevNs ?? null);
-    if (allVariantsHaveMetric(jitterPerVariant)) {
-      radarData.push({
-        axis: "Latency Stability Score",
-        safe: scoreOrNull(variantByType.get("safe")?.stdDevNs ?? null, jitterRange.min, jitterRange.max),
-        raw: scoreOrNull(variantByType.get("raw")?.stdDevNs ?? null, jitterRange.min, jitterRange.max),
-        arena: scoreOrNull(variantByType.get("arena")?.stdDevNs ?? null, jitterRange.min, jitterRange.max),
-      });
-    } else {
-      omittedRadarAxes.push("Latency Stability (incomplete variant coverage)");
-    }
-  }
+  const radar = useMemo(
+    () => buildVariantRadarMetrics(snapshotAggregates, focusFamily),
+    [focusFamily, snapshotAggregates],
+  );
+  const radarData = radar.metrics;
+  const omittedRadarAxes = radar.omittedAxes;
 
   const lineData = useMemo(() => {
     const byVariantAndSize = new Map<string, Map<number, { sum: number; lowerSum: number; upperSum: number; count: number }>>();
@@ -554,6 +454,137 @@ function VariantDrilldownInner({ records, dataset, selectedImplementations }: Va
     }));
   }, [familyRecords]);
 
+  const callgrindByJoinKey = useMemo(() => {
+    const buckets = new Map<string, Array<Record<string, number>>>();
+
+    for (const row of dataset.callgrind) {
+      const values = buckets.get(row.joinKey) ?? [];
+      values.push(row.metrics);
+      buckets.set(row.joinKey, values);
+    }
+
+    const averaged = new Map<string, Record<string, number>>();
+    for (const [joinKey, values] of buckets.entries()) {
+      const totals = new Map<string, number>();
+      const counts = new Map<string, number>();
+
+      for (const metrics of values) {
+        for (const [key, value] of Object.entries(metrics)) {
+          totals.set(key, (totals.get(key) ?? 0) + value);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      }
+
+      const metrics: Record<string, number> = {};
+      for (const [key, total] of totals.entries()) {
+        const count = counts.get(key) ?? 1;
+        metrics[key] = total / count;
+      }
+
+      averaged.set(joinKey, metrics);
+    }
+
+    return averaged;
+  }, [dataset.callgrind]);
+
+  const profilingLineData = useMemo(() => {
+    const byVariantAndSize = new Map<VariantKey, Map<number, { irSum: number; irCount: number; missSum: number; missCount: number }>>();
+
+    for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
+      byVariantAndSize.set(variant, new Map<number, { irSum: number; irCount: number; missSum: number; missCount: number }>());
+    }
+
+    for (const record of familyRecords) {
+      const variant = variantFromImplementation(record.implementation);
+      if (!variant) continue;
+
+      const metrics = callgrindByJoinKey.get(record.joinKey);
+      if (!metrics) continue;
+
+      const bySize = byVariantAndSize.get(variant);
+      if (!bySize) continue;
+
+      const current = bySize.get(record.size) ?? { irSum: 0, irCount: 0, missSum: 0, missCount: 0 };
+
+      const ir = metrics.Ir;
+      if (typeof ir === "number" && Number.isFinite(ir)) {
+        current.irSum += ir;
+        current.irCount += 1;
+      }
+
+      const dr = metrics.Dr;
+      const dw = metrics.Dw;
+      const d1mr = metrics.D1mr;
+      const d1mw = metrics.D1mw;
+      if (
+        typeof dr === "number" && Number.isFinite(dr) &&
+        typeof dw === "number" && Number.isFinite(dw) &&
+        typeof d1mr === "number" && Number.isFinite(d1mr) &&
+        typeof d1mw === "number" && Number.isFinite(d1mw)
+      ) {
+        const accesses = dr + dw;
+        if (accesses > 0) {
+          current.missSum += (d1mr + d1mw) / accesses;
+          current.missCount += 1;
+        }
+      }
+
+      bySize.set(record.size, current);
+    }
+
+    const sizes = [...new Set(familyRecords.map((record) => record.size))].sort((a, b) => a - b);
+    return sizes.map((size) => {
+      const row: {
+        size: number;
+        safeIr: number | null;
+        rawIr: number | null;
+        arenaIr: number | null;
+        safeMiss: number | null;
+        rawMiss: number | null;
+        arenaMiss: number | null;
+      } = {
+        size,
+        safeIr: null,
+        rawIr: null,
+        arenaIr: null,
+        safeMiss: null,
+        rawMiss: null,
+        arenaMiss: null,
+      };
+
+      for (const variant of ["safe", "raw", "arena"] as VariantKey[]) {
+        const entry = byVariantAndSize.get(variant)?.get(size);
+        if (!entry) continue;
+
+        row[`${variant}Ir`] = entry.irCount > 0 ? entry.irSum / entry.irCount : null;
+        row[`${variant}Miss`] = entry.missCount > 0 ? entry.missSum / entry.missCount : null;
+      }
+
+      return row;
+    });
+  }, [callgrindByJoinKey, familyRecords]);
+
+  const hasProfilingTrendData = useMemo(
+    () =>
+      profilingLineData.some(
+        (point) =>
+          point.safeIr != null ||
+          point.rawIr != null ||
+          point.arenaIr != null ||
+          point.safeMiss != null ||
+          point.rawMiss != null ||
+          point.arenaMiss != null,
+      ),
+    [profilingLineData],
+  );
+
+  const instructionTickScale = useMemo(() => {
+    const values = profilingLineData
+      .flatMap((point) => [point.safeIr, point.rawIr, point.arenaIr])
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    return values.length > 0 ? Math.max(...values) : 0;
+  }, [profilingLineData]);
+
   const latencyScale = useMemo(() => {
     const latencyValues = lineData
       .flatMap((item) => [item.safe, item.safeLower, item.safeUpper, item.raw, item.rawLower, item.rawUpper, item.arena, item.arenaLower, item.arenaUpper])
@@ -568,40 +599,42 @@ function VariantDrilldownInner({ records, dataset, selectedImplementations }: Va
     return (
       <AppGlassPanel className="space-y-2">
         <h3 className="font-display text-xl">Variant Drilldown</h3>
-        <p className="text-sm text-text-muted">Pin or filter to a structure family with safe/raw/arena variants.</p>
+        <p className="text-sm text-text-muted">Pin one implementation to see how its family compares across the safe, raw, and arena variants.</p>
       </AppGlassPanel>
     );
   }
 
   return (
     <AppGlassPanel className="space-y-4">
-      <div className="flex items-end justify-between gap-4">
+      <div className="space-y-3">
         <div>
           <h3 className="font-display text-xl">Variant Micro-Drilldown</h3>
-          <p className="text-sm text-text-muted">Focused family: {focusFamily}</p>
-          <p className="text-xs text-text-muted/90">Axes are metric-only and derived from available benchmark operations for this family.</p>
+          <p className="text-sm text-text-muted">Looking at the {focusFamily} family across the visible variants.</p>
+          <p className="text-xs text-text-muted/90">
+            The radar is locked to the exact current workload slice and scores each variant against the broader visible context, so near-equal variants stay near the middle instead of collapsing to 0 or 100.
+          </p>
           {omittedRadarAxes.length > 0 ? (
-            <p className="text-xs text-text-muted/75">Radar omitted {omittedRadarAxes.length} axis{omittedRadarAxes.length === 1 ? "" : "es"} when metrics were missing for one or more visible variants.</p>
-          ) : null}
-          {callgrindCoverage.totalSizes > 0 ? (
             <p className="text-xs text-text-muted/75">
-              Cache coverage (callgrind sizes): safe {callgrindCoverage.safe}/{callgrindCoverage.totalSizes}, raw {callgrindCoverage.raw}/{callgrindCoverage.totalSizes}, arena {callgrindCoverage.arena}/{callgrindCoverage.totalSizes}
+              Some radar spokes are hidden until every visible variant has matching profiling coverage: {omittedRadarAxes.join(", ")}.
             </p>
           ) : null}
         </div>
-        <div className="text-sm text-text-muted">
+
+        <div className="grid gap-2 sm:grid-cols-3">
           {availableVariants.map((variant) => {
             const item = variantByType.get(variant);
             return (
-              <p key={variant}>
-                {variant}: {item ? `${formatLatencyWithScale(item.meanNs, latencyScale)}, ${formatBytes(item.estimatedMemoryBytes)}` : "n/a"}
-              </p>
+              <div key={variant} className="rounded-md border border-panel-border bg-bg-elevated/55 px-3 py-2.5">
+                <p className="text-xs uppercase tracking-[0.12em] text-text-muted">{formatVariantLabel(variant)}</p>
+                <p className="mt-1 text-sm text-text">Average run time: <span className="font-mono text-primary">{item ? formatLatencyWithScale(item.meanNs, latencyScale) : "n/a"}</span></p>
+                <p className="text-sm text-text">Memory footprint: <span className="font-mono text-text-muted">{item ? formatBytes(item.estimatedMemoryBytes) : "n/a"}</span></p>
+              </div>
             );
           })}
         </div>
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-2">
+      <div className="space-y-3">
         <div className="rounded-md border border-panel-border bg-bg-elevated/65 p-2.5">
           <ResponsiveContainer width="100%" height={360}>
             <RadarChart data={radarData} outerRadius="66%" margin={{ top: 24, right: 26, bottom: 18, left: 26 }}>
@@ -632,93 +665,210 @@ function VariantDrilldownInner({ records, dataset, selectedImplementations }: Va
           </ResponsiveContainer>
         </div>
 
-        <div className="rounded-md border border-panel-border bg-bg-elevated/65 p-2.5">
-          <ResponsiveContainer width="100%" height={360}>
-            <ComposedChart data={lineData} margin={{ top: 10, right: 16, left: 40, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="4 6" stroke={CHART_COLORS.gridSubtle} />
-              <XAxis
-                dataKey="size"
-                type="number"
-                scale="linear"
-                domain={["dataMin", "dataMax"]}
-                ticks={sizeTicks}
-                tickFormatter={(value: number) => formatCompactTick(Number(value))}
-                tick={{
-                  fill: CHART_COLORS.label,
-                  fontSize: 12,
-                  fontFamily: "var(--font-ibm-plex-mono), monospace",
-                }}
-                label={{
-                  value: "Input Size",
-                  position: "insideBottom",
-                  offset: -2,
-                  fill: CHART_COLORS.label,
-                  fontSize: 12,
-                  fontFamily: "var(--font-ibm-plex-mono), monospace",
-                }}
-              />
-              <YAxis
-                tickFormatter={(value: number) => formatLatencyTickWithScale(value, latencyScale)}
-                tick={{
-                  fill: CHART_COLORS.label,
-                  fontSize: 12,
-                  fontFamily: "var(--font-ibm-plex-mono), monospace",
-                }}
-                label={{
-                  value: `Mean Latency (${latencyScale.unit})`,
-                  angle: -90,
-                  position: "insideLeft",
-                  dx: -30,
-                  fill: CHART_COLORS.label,
-                  fontSize: 12,
-                  fontFamily: "var(--font-ibm-plex-mono), monospace",
-                }}
-              />
-              <Tooltip content={<LineTooltipContent latencyScale={latencyScale} />} />
-              <Legend />
-              {availableVariants.map((variant) => (
-                <Area
-                  key={`${variant}-ci-base`}
-                  type="monotone"
-                  dataKey={`${variant}Lower`}
-                  stackId={`ci-${variant}`}
-                  stroke="none"
-                  fill="transparent"
-                  connectNulls
-                  isAnimationActive
-                  legendType="none"
+        <div className="grid gap-3 xl:grid-cols-2">
+          <div className="rounded-md border border-panel-border bg-bg-elevated/65 p-2.5">
+            <div className="mb-2">
+              <p className="text-xs uppercase tracking-[0.12em] text-text-muted">Latency Trend</p>
+              <p className="text-xs text-text-muted/80">Mean latency over input size with confidence interval bands.</p>
+            </div>
+            <ResponsiveContainer width="100%" height={360}>
+              <ComposedChart data={lineData} margin={{ top: 10, right: 16, left: 40, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="4 6" stroke={CHART_COLORS.gridSubtle} />
+                <XAxis
+                  dataKey="size"
+                  type="number"
+                  scale="linear"
+                  domain={["dataMin", "dataMax"]}
+                  ticks={sizeTicks}
+                  tickFormatter={(value: number) => formatCompactTick(Number(value))}
+                  tick={{
+                    fill: CHART_COLORS.label,
+                    fontSize: 12,
+                    fontFamily: "var(--font-ibm-plex-mono), monospace",
+                  }}
+                  label={{
+                    value: "Input Size",
+                    position: "insideBottom",
+                    offset: -2,
+                    fill: CHART_COLORS.label,
+                    fontSize: 12,
+                    fontFamily: "var(--font-ibm-plex-mono), monospace",
+                  }}
                 />
-              ))}
-              {availableVariants.map((variant) => (
-                <Area
-                  key={`${variant}-ci-band`}
-                  type="monotone"
-                  dataKey={`${variant}Band`}
-                  stackId={`ci-${variant}`}
-                  name={`${variant} CI band`}
-                  stroke="none"
-                  fill={VARIANT_COLORS[variant]}
-                  fillOpacity={0.16}
-                  connectNulls
-                  isAnimationActive
-                  legendType="none"
+                <YAxis
+                  tickFormatter={(value: number) => formatLatencyTickWithScale(value, latencyScale)}
+                  tick={{
+                    fill: CHART_COLORS.label,
+                    fontSize: 12,
+                    fontFamily: "var(--font-ibm-plex-mono), monospace",
+                  }}
+                  label={{
+                    value: `Mean Latency (${latencyScale.unit})`,
+                    angle: -90,
+                    position: "insideLeft",
+                    dx: -30,
+                    dy: 0,
+                    fill: CHART_COLORS.label,
+                    fontSize: 12,
+                    fontFamily: "var(--font-ibm-plex-mono), monospace",
+                  }}
                 />
-              ))}
-              {availableVariants.map((variant) => (
-                <Line
-                  key={variant}
-                  type="monotone"
-                  dataKey={variant}
-                  name={`${variant} mean`}
-                  stroke={VARIANT_COLORS[variant]}
-                  strokeWidth={2.2}
-                  dot={false}
-                  connectNulls
-                  isAnimationActive
-                />
-              ))}
-            </ComposedChart>
-          </ResponsiveContainer>
+                <Tooltip content={<LineTooltipContent latencyScale={latencyScale} />} />
+                <Legend />
+                {availableVariants.map((variant) => (
+                  <Area
+                    key={`${variant}-ci-base`}
+                    type="monotone"
+                    dataKey={`${variant}Lower`}
+                    stackId={`ci-${variant}`}
+                    stroke="none"
+                    fill="transparent"
+                    connectNulls
+                    isAnimationActive
+                    legendType="none"
+                  />
+                ))}
+                {availableVariants.map((variant) => (
+                  <Area
+                    key={`${variant}-ci-band`}
+                    type="monotone"
+                    dataKey={`${variant}Band`}
+                    stackId={`ci-${variant}`}
+                    name={`${variant} CI band`}
+                    stroke="none"
+                    fill={VARIANT_COLORS[variant]}
+                    fillOpacity={0.16}
+                    connectNulls
+                    isAnimationActive
+                    legendType="none"
+                  />
+                ))}
+                {availableVariants.map((variant) => (
+                  <Line
+                    key={variant}
+                    type="monotone"
+                    dataKey={variant}
+                    name={`${variant} mean`}
+                    stroke={VARIANT_COLORS[variant]}
+                    strokeWidth={2.2}
+                    dot={false}
+                    connectNulls
+                    isAnimationActive
+                  />
+                ))}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="rounded-md border border-panel-border bg-bg-elevated/65 p-2.5">
+            <div className="mb-2">
+              <p className="text-xs uppercase tracking-[0.12em] text-text-muted">Profiling Trend</p>
+              <p className="text-xs text-text-muted/80">Solid lines: instructions (Ir). Dashed lines: L1 data miss rate.</p>
+            </div>
+            {hasProfilingTrendData ? (
+              <ResponsiveContainer width="100%" height={360}>
+                <ComposedChart data={profilingLineData} margin={{ top: 10, right: 42, left: 40, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="4 6" stroke={CHART_COLORS.gridSubtle} />
+                  <XAxis
+                    dataKey="size"
+                    type="number"
+                    scale="linear"
+                    domain={["dataMin", "dataMax"]}
+                    ticks={sizeTicks}
+                    tickFormatter={(value: number) => formatCompactTick(Number(value))}
+                    tick={{
+                      fill: CHART_COLORS.label,
+                      fontSize: 12,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                    label={{
+                      value: "Input Size",
+                      position: "insideBottom",
+                      offset: -2,
+                      fill: CHART_COLORS.label,
+                      fontSize: 12,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                  />
+                  <YAxis
+                    yAxisId="ir"
+                    tickFormatter={(value: number) => formatCompactTick(Number(value))}
+                    tick={{
+                      fill: CHART_COLORS.label,
+                      fontSize: 12,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                    label={{
+                      value: instructionTickScale >= 1_000_000 ? "Instructions (M)" : "Instructions",
+                      angle: -90,
+                      position: "insideLeft",
+                      dx: -30,
+                      dy: 0,
+                      fill: CHART_COLORS.label,
+                      fontSize: 12,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                  />
+                  <YAxis
+                    yAxisId="miss"
+                    orientation="right"
+                    tickFormatter={(value: number) => `${(Number(value) * 100).toFixed(2)}%`}
+                    tick={{
+                      fill: CHART_COLORS.label,
+                      fontSize: 11,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                    label={{
+                      value: "L1 Data Miss %",
+                      angle: 90,
+                      position: "insideRight",
+                      dx: 24,
+                      dy: 0,
+                      fill: CHART_COLORS.label,
+                      fontSize: 12,
+                      fontFamily: "var(--font-ibm-plex-mono), monospace",
+                    }}
+                  />
+                  <Tooltip content={<ProfilingTooltipContent />} />
+                  <Legend />
+                  {availableVariants.map((variant) => (
+                    <Line
+                      key={`${variant}-ir`}
+                      yAxisId="ir"
+                      type="monotone"
+                      dataKey={`${variant}Ir`}
+                      name={`${variant} Ir`}
+                      stroke={VARIANT_COLORS[variant]}
+                      strokeWidth={2.2}
+                      dot={false}
+                      connectNulls
+                      isAnimationActive
+                    />
+                  ))}
+                  {availableVariants.map((variant) => (
+                    <Line
+                      key={`${variant}-miss`}
+                      yAxisId="miss"
+                      type="monotone"
+                      dataKey={`${variant}Miss`}
+                      name={`${variant} L1 miss`}
+                      stroke={VARIANT_COLORS[variant]}
+                      strokeWidth={1.7}
+                      strokeDasharray="6 4"
+                      opacity={0.8}
+                      dot={false}
+                      connectNulls
+                      isAnimationActive
+                    />
+                  ))}
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-[360px] items-center justify-center rounded-md border border-panel-border/70 bg-bg-elevated/35 p-4 text-center text-sm text-text-muted">
+                No callgrind trend data is available for this family in the current context.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </AppGlassPanel>

@@ -11,26 +11,48 @@ const DEFAULT_NUMERATOR: u32 = 1;
 const DEFAULT_DENOMINATOR: u32 = 2;
 
 #[derive(Debug)]
+struct Forward<K, V> {
+    next: *mut Node<K, V>,
+    span: usize,
+}
+
+impl<K, V> Clone for Forward<K, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K, V> Copy for Forward<K, V> {}
+
+#[derive(Debug)]
 struct Node<K, V> {
     key: Option<K>,
     value: Option<V>,
-    forwards: Vec<*mut Node<K, V>>,
+    forwards: Vec<Forward<K, V>>,
 }
 
 impl<K, V> Node<K, V> {
     fn head(max_level: usize) -> Self {
+        let mut forwards = Vec::with_capacity(max_level);
+        for _ in 0..max_level {
+            forwards.push(Forward { next: ptr::null_mut(), span: 1 });
+        }
         Self {
             key: None,
             value: None,
-            forwards: vec![ptr::null_mut(); max_level],
+            forwards,
         }
     }
 
     fn new(key: K, value: V, level: usize) -> Self {
+        let mut forwards = Vec::with_capacity(level);
+        for _ in 0..level {
+            forwards.push(Forward { next: ptr::null_mut(), span: 0 });
+        }
         Self {
             key: Some(key),
             value: Some(value),
-            forwards: vec![ptr::null_mut(); level],
+            forwards,
         }
     }
 
@@ -84,7 +106,6 @@ impl<'a, K, V> SkipCursor<'a, K, V> {
     }
 
     pub fn key(&self) -> &'a K {
-        // SAFETY: cursor lifetime is tied to immutable list borrow and only points to keyed nodes.
         unsafe {
             (*self.node)
                 .key
@@ -94,7 +115,6 @@ impl<'a, K, V> SkipCursor<'a, K, V> {
     }
 
     pub fn value(&self) -> &'a V {
-        // SAFETY: cursor lifetime is tied to immutable list borrow and only points to valued nodes.
         unsafe {
             (*self.node)
                 .value
@@ -104,7 +124,6 @@ impl<'a, K, V> SkipCursor<'a, K, V> {
     }
 
     pub fn level(&self) -> usize {
-        // SAFETY: cursor points to a live node owned by this list.
         unsafe { (*self.node).level() }
     }
 
@@ -186,17 +205,25 @@ impl<K, V> SkipList<K, V> {
             return ptr::null_mut();
         }
 
-        // SAFETY: head is always allocated during list lifetime.
-        let mut current = unsafe { (*self.head).forwards[0] };
-        for _ in 0..index {
-            if current.is_null() {
-                return ptr::null_mut();
+        let mut current = self.head;
+        let mut pos = 0usize;
+        let target = index + 1;
+
+        unsafe {
+            for level in (0..self.level).rev() {
+                while !(*current).forwards[level].next.is_null() {
+                    let span = (*current).forwards[level].span;
+                    if pos + span <= target {
+                        pos += span;
+                        current = (*current).forwards[level].next;
+                    } else {
+                        break;
+                    }
+                }
             }
-            // SAFETY: current points to a live node in level-0 chain.
-            current = unsafe { (*current).forwards[0] };
         }
 
-        current
+        if pos == target { current } else { ptr::null_mut() }
     }
 
     pub fn cursor_at(&self, index: usize) -> Option<SkipCursor<'_, K, V>> {
@@ -213,22 +240,17 @@ impl<K, V> SkipList<K, V> {
     }
 
     pub fn clear(&mut self) {
-        // SAFETY: head exists for the lifetime of the list.
-        let mut current = unsafe { (*self.head).forwards[0] };
-        while !current.is_null() {
-            // SAFETY: current points to live node, read next before deallocation.
-            let next = unsafe { (*current).forwards[0] };
-            // SAFETY: each node is dropped exactly once while walking level-0 chain.
-            unsafe {
-                drop(Box::from_raw(current));
-            }
-            current = next;
-        }
-
-        // SAFETY: head is valid and can be reset in-place.
         unsafe {
+            let mut current = (*self.head).forwards[0].next;
+            while !current.is_null() {
+                let next = (*current).forwards[0].next;
+                drop(Box::from_raw(current));
+                current = next;
+            }
+
             for slot in &mut (*self.head).forwards {
-                *slot = ptr::null_mut();
+                slot.next = ptr::null_mut();
+                slot.span = 1;
             }
         }
 
@@ -237,128 +259,53 @@ impl<K, V> SkipList<K, V> {
     }
 
     pub fn iter(&self) -> Iter<'_, K, V> {
-        // SAFETY: head is valid and level-0 forward pointer may be null.
-        let next = unsafe { (*self.head).forwards[0] as *const Node<K, V> };
+        let next = unsafe { (*self.head).forwards[0].next as *const Node<K, V> };
         Iter {
             next,
             marker: PhantomData,
         }
     }
 
-    fn search_node(&self, key: &K) -> *mut Node<K, V>
+    fn find_update_path(&self, key: &K, update: &mut [*mut Node<K, V>], rank: &mut [usize]) -> Option<usize>
     where
         K: Ord,
     {
         let mut current = self.head;
+        let mut current_rank = 0usize;
+        let mut found_rank = None;
 
-        for level in (0..self.level).rev() {
-            loop {
-                // SAFETY: current is always a live node in the structure.
-                let next = unsafe { (*current).forwards[level] };
-                if next.is_null() {
-                    break;
+        unsafe {
+            for level in (0..self.max_level).rev() {
+                if level < self.level {
+                    loop {
+                        let next = (*current).forwards[level].next;
+                        let span = (*current).forwards[level].span;
+                        if next.is_null() {
+                            break;
+                        }
+
+                        let ord = (*next)
+                            .key
+                            .as_ref()
+                            .expect("non-head node should have key")
+                            .cmp(key);
+
+                        if ord == Ordering::Less {
+                            current_rank += span;
+                            current = next;
+                            continue;
+                        } else if ord == Ordering::Equal {
+                            found_rank = Some(current_rank + span);
+                        }
+
+                        break;
+                    }
                 }
-
-                // SAFETY: next is live and non-head, so key is present.
-                let ord = unsafe {
-                    (*next)
-                        .key
-                        .as_ref()
-                        .expect("non-head node should have key")
-                        .cmp(key)
-                };
-
-                match ord {
-                    Ordering::Less => current = next,
-                    Ordering::Equal => return next,
-                    Ordering::Greater => break,
-                }
+                update[level] = current;
+                rank[level] = current_rank;
             }
         }
-
-        // SAFETY: current is valid; candidate may be null.
-        let candidate = unsafe { (*current).forwards[0] };
-        if candidate.is_null() {
-            return ptr::null_mut();
-        }
-
-        // SAFETY: candidate is non-null and in structure.
-        let is_match = unsafe {
-            (*candidate)
-                .key
-                .as_ref()
-                .expect("non-head node should have key")
-                == key
-        };
-
-        if is_match { candidate } else { ptr::null_mut() }
-    }
-
-    fn index_of_key(&self, key: &K) -> Option<usize>
-    where
-        K: Ord,
-    {
-        // SAFETY: head is valid.
-        let mut current = unsafe { (*self.head).forwards[0] };
-        let mut index = 0usize;
-
-        while !current.is_null() {
-            // SAFETY: current is live and non-head.
-            let ord = unsafe {
-                (*current)
-                    .key
-                    .as_ref()
-                    .expect("non-head node should have key")
-                    .cmp(key)
-            };
-
-            match ord {
-                Ordering::Less => {
-                    index += 1;
-                    // SAFETY: current is live.
-                    current = unsafe { (*current).forwards[0] };
-                }
-                Ordering::Equal => return Some(index),
-                Ordering::Greater => return None,
-            }
-        }
-
-        None
-    }
-
-    fn find_update_path(&self, key: &K, update: &mut [*mut Node<K, V>])
-    where
-        K: Ord,
-    {
-        let mut current = self.head;
-
-        for level in (0..self.level).rev() {
-            loop {
-                // SAFETY: current is always live.
-                let next = unsafe { (*current).forwards[level] };
-                if next.is_null() {
-                    break;
-                }
-
-                // SAFETY: next is live and non-head.
-                let ord = unsafe {
-                    (*next)
-                        .key
-                        .as_ref()
-                        .expect("non-head node should have key")
-                        .cmp(key)
-                };
-
-                if ord == Ordering::Less {
-                    current = next;
-                    continue;
-                }
-
-                break;
-            }
-
-            update[level] = current;
-        }
+        found_rank
     }
 }
 
@@ -371,7 +318,6 @@ impl<K, V> Default for SkipList<K, V> {
 impl<K, V> Drop for SkipList<K, V> {
     fn drop(&mut self) {
         self.clear();
-        // SAFETY: head is uniquely owned and dropped exactly once here.
         unsafe {
             drop(Box::from_raw(self.head));
         }
@@ -391,10 +337,9 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
             return None;
         }
 
-        // SAFETY: iterator is tied to immutable borrow of list and follows level-0 links.
         unsafe {
             let node = &*self.next;
-            self.next = node.forwards[0];
+            self.next = node.forwards[0].next;
             Some((
                 node.key.as_ref().expect("iterator node should have key"),
                 node.value
@@ -418,53 +363,47 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut update = vec![self.head; self.max_level];
-        self.find_update_path(&key, &mut update);
-
-        // SAFETY: update[0] always points to a live predecessor.
-        let candidate = unsafe { (*update[0]).forwards[0] };
-        if !candidate.is_null() {
-            // SAFETY: candidate is live and non-head.
-            let is_equal = unsafe {
-                (*candidate)
-                    .key
-                    .as_ref()
-                    .expect("non-head node should have key")
-                    == &key
-            };
-
-            if is_equal {
-                // SAFETY: candidate is live and has value.
-                return unsafe {
-                    Some(
-                        (*candidate)
-                            .value
-                            .replace(value)
-                            .expect("non-head node should have value"),
-                    )
-                };
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(&key, &mut update, &mut rank).is_some() {
+            unsafe {
+                let candidate = (*update[0]).forwards[0].next;
+                return Some(
+                    (*candidate)
+                        .value
+                        .replace(value)
+                        .expect("non-head node should have value"),
+                );
             }
         }
 
         let new_level = self.random_level();
         if new_level > self.level {
-            for slot in update.iter_mut().take(new_level).skip(self.level) {
-                *slot = self.head;
+            for i in self.level..new_level {
+                rank[i] = 0;
+                update[i] = self.head;
+                unsafe {
+                    (*update[i]).forwards[i].span = self.len + 1;
+                }
             }
             self.level = new_level;
         }
 
         let new_node = Box::into_raw(Box::new(Node::new(key, value, new_level)));
 
-        for (level, predecessor) in update.iter().enumerate().take(new_level) {
-            // SAFETY: predecessor is live and has this level available.
-            let next = unsafe { (**predecessor).forwards[level] };
-            // SAFETY: new_node is newly allocated and writable.
-            unsafe {
-                (*new_node).forwards[level] = next;
+        unsafe {
+            for level in 0..new_level {
+                let next = (*update[level]).forwards[level].next;
+                let old_span = (*update[level]).forwards[level].span;
+
+                (*new_node).forwards[level].next = next;
+                (*new_node).forwards[level].span = old_span - (rank[0] - rank[level]);
+                
+                (*update[level]).forwards[level].next = new_node;
+                (*update[level]).forwards[level].span = (rank[0] - rank[level]) + 1;
             }
-            // SAFETY: predecessor is live and writable.
-            unsafe {
-                (**predecessor).forwards[level] = new_node;
+
+            for level in new_level..self.level {
+                (*update[level]).forwards[level].span += 1;
             }
         }
 
@@ -473,14 +412,14 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
     }
 
     fn cursor<'a>(&'a self, key: &K) -> Option<Self::Cursor<'a>> {
-        let node = self.search_node(key);
-        if node.is_null() {
-            return None;
-        }
-
-        let index = self.index_of_key(key)?;
+        let mut update = vec![self.head; self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        let found_rank = self.find_update_path(key, &mut update, &mut rank)?;
+        let node = unsafe { (*update[0]).forwards[0].next };
+        if node.is_null() { return None; }
+        
         Some(SkipCursor {
-            index,
+            index: found_rank - 1,
             node,
             marker: PhantomData,
         })
@@ -492,64 +431,61 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn remove(&mut self, key: &K) -> Option<V> {
         let mut update = vec![self.head; self.max_level];
-        self.find_update_path(key, &mut update);
-
-        // SAFETY: update[0] always points to a live predecessor.
-        let target = unsafe { (*update[0]).forwards[0] };
-        if target.is_null() {
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(key, &mut update, &mut rank).is_none() {
             return None;
         }
 
-        // SAFETY: target is live and non-head.
-        let is_match = unsafe {
-            (*target)
-                .key
-                .as_ref()
-                .expect("non-head node should have key")
-                == key
-        };
-        if !is_match {
-            return None;
-        }
+        unsafe {
+            let target = (*update[0]).forwards[0].next;
+            if target.is_null() {
+                return None;
+            }
 
-        // SAFETY: target is live.
-        let target_level = unsafe { (*target).level() };
+            let target_level = (*target).level();
 
-        for (level, predecessor) in update.iter().enumerate().take(target_level) {
-            // SAFETY: predecessor is live.
-            let points_to_target = unsafe { (**predecessor).forwards[level] == target };
-            if points_to_target {
-                // SAFETY: target is live.
-                let successor = unsafe { (*target).forwards[level] };
-                // SAFETY: predecessor is live and writable.
-                unsafe {
-                    (**predecessor).forwards[level] = successor;
+            for level in 0..self.level {
+                if level < target_level && (*update[level]).forwards[level].next == target {
+                    (*update[level]).forwards[level].span += (*target).forwards[level].span - 1;
+                    (*update[level]).forwards[level].next = (*target).forwards[level].next;
+                } else {
+                    (*update[level]).forwards[level].span -= 1;
                 }
             }
-        }
 
-        while self.level > 1 {
-            // SAFETY: head is live.
-            let top = unsafe { (*self.head).forwards[self.level - 1] };
-            if !top.is_null() {
-                break;
+            while self.level > 1 && (*self.head).forwards[self.level - 1].next.is_null() {
+                self.level -= 1;
             }
-            self.level -= 1;
+
+            self.len -= 1;
+            let boxed = Box::from_raw(target);
+            boxed.value
         }
-
-        self.len -= 1;
-
-        // SAFETY: target has been detached from all levels where it appears.
-        let boxed = unsafe { Box::from_raw(target) };
-        boxed.value
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        !self.search_node(key).is_null()
+        let mut update = vec![self.head; self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        self.find_update_path(key, &mut update, &mut rank).is_some()
     }
 
     fn clear(&mut self) {
-        Self::clear(self)
+        unsafe {
+            let mut current = (*self.head).forwards[0].next;
+            while !current.is_null() {
+                let next = (*current).forwards[0].next;
+                drop(Box::from_raw(current));
+                current = next;
+            }
+
+            for slot in &mut (*self.head).forwards {
+                slot.next = ptr::null_mut();
+                slot.span = 1;
+            }
+        }
+
+        self.len = 0;
+        self.level = 1;
     }
 
     fn len(&self) -> usize {

@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { ParentSize } from "@visx/responsive";
 import { scaleLinear, scaleLog } from "@visx/scale";
 import { LinePath } from "@visx/shape";
@@ -12,6 +12,7 @@ import {
   buildParetoFront,
   formatBytes,
 } from "@/lib/bench/analytics";
+import { useDashboardStore } from "@/lib/bench/store";
 import { CHART_COLORS, VARIANT_COLORS } from "@/lib/bench/visualTokens";
 import type { CriterionRecord, NormalizedBenchmarkDataset } from "@/lib/bench/types";
 
@@ -27,9 +28,9 @@ interface TradeoffMatrixProps {
 }
 
 const MIN_CHART_WIDTH = 320;
-const MIN_CHART_HEIGHT = 360;
-const MAX_CHART_HEIGHT = 560;
-const CHART_ASPECT = 0.66;
+const MIN_CHART_HEIGHT = 300;
+const MAX_CHART_HEIGHT = 500;
+const CHART_ASPECT = 0.78;
 
 type AxisScaleMode = "log" | "linear";
 type AxisUnit = { divisor: number; label: string };
@@ -72,6 +73,56 @@ function formatTickWithUnit(value: number, unit: AxisUnit): string {
   return normalized.toFixed(2);
 }
 
+function formatCompactCount(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return Math.round(value).toLocaleString();
+}
+
+function formatPercent(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function InfoDot({ help }: { help: string }) {
+  return (
+    <span className="group relative ml-1 inline-flex align-middle">
+      <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-panel-border/90 bg-panel/65 text-[9px] font-semibold text-text-muted">
+        i
+      </span>
+      <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1.5 w-52 -translate-x-1/2 rounded-md border border-panel-border/85 bg-bg-elevated/95 px-2 py-1.5 text-[11px] normal-case leading-snug text-text-muted opacity-0 shadow-panel backdrop-blur-sm transition-opacity group-hover:opacity-100">
+        {help}
+      </span>
+    </span>
+  );
+}
+
+function SnapshotMetric({ label, value, help }: { label: string; value: string; help: string }) {
+  return (
+    <div className="rounded-md border border-panel-border/70 bg-bg-elevated/55 px-2.5 py-2 text-left">
+      <p className="text-[10px] uppercase tracking-[0.11em] text-text-muted">
+        {label}
+        <InfoDot help={help} />
+      </p>
+      <p className="mt-0.5 font-mono text-sm text-text">{value}</p>
+    </div>
+  );
+}
+
+function StatusMetric({ label, value, help }: { label: string; value: string; help: string }) {
+  return (
+    <div className="rounded-md border border-panel-border/70 bg-bg-elevated/55 px-2.5 py-2 text-left">
+      <p className="text-[10px] uppercase tracking-[0.11em] text-text-muted">
+        {label}
+        <InfoDot help={help} />
+      </p>
+      <p className="mt-0.5 font-mono text-sm text-text">{value}</p>
+    </div>
+  );
+}
+
 type OverlayPlacement = {
   left: string;
   top: string;
@@ -79,6 +130,14 @@ type OverlayPlacement = {
 };
 
 function computeOverlayPlacement(cx: number, cy: number, width: number, height: number): OverlayPlacement {
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+    return {
+      left: `${Math.max(12, Math.floor(width * 0.5 - 180))}px`,
+      top: `${Math.max(12, Math.floor(height * 0.5 - 72))}px`,
+      transform: "translate(0, 0)",
+    };
+  }
+
   const margin = 10;
   const overlayWidth = Math.min(440, Math.max(300, width - margin * 2));
   const overlayHeight = 172;
@@ -114,8 +173,9 @@ function TradeoffMatrixInner({
   onHideOutliersChange,
 }: TradeoffMatrixProps) {
   const [hovered, setHovered] = useState<string | null>(null);
-  const [pinnedDetails, setPinnedDetails] = useState<string | null>(null);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
+  const hoveredImplementation = useDashboardStore((state) => state.hoveredImplementation);
+  const setHoveredImplementation = useDashboardStore((state) => state.setHoveredImplementation);
 
   const aggregates = useMemo(() => buildImplementationAggregates(records, dataset), [dataset, records]);
   const points = useMemo(
@@ -148,6 +208,7 @@ function TradeoffMatrixInner({
   );
 
   const paretoFront = useMemo(() => buildParetoFront(visiblePoints), [visiblePoints]);
+  const soleParetoImplementation = paretoFront.length === 1 ? paretoFront[0]?.implementation ?? null : null;
 
   const presentVariants = useMemo(() => {
     const variants = new Set(visibleAggregates.map((item) => item.variant));
@@ -159,6 +220,44 @@ function TradeoffMatrixInner({
       other: variants.has("other"),
     };
   }, [visibleAggregates]);
+
+  const profilingSnapshot = useMemo(() => {
+    const instructions = visibleAggregates
+      .map((item) => item.profiling.instructions)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const l1MissRate = visibleAggregates
+      .map((item) => item.profiling.l1DataMissRate)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const peakBytes = visibleAggregates
+      .map((item) => item.profiling.peakBytes)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+    return {
+      instructionsP50: instructions.length > 0 ? quantile(instructions, 0.5) : null,
+      l1MissRateP50: l1MissRate.length > 0 ? quantile(l1MissRate, 0.5) : null,
+      peakBytesP50: peakBytes.length > 0 ? quantile(peakBytes, 0.5) : null,
+    };
+  }, [visibleAggregates]);
+
+  useEffect(() => {
+    if (hovered && !visibleAggregates.some((item) => item.implementation === hovered)) {
+      setHovered(null);
+      setHoverPosition(null);
+      if (hoveredImplementation === hovered) {
+        setHoveredImplementation(null);
+      }
+    }
+  }, [hovered, hoveredImplementation, setHoveredImplementation, visibleAggregates]);
+
+  const activeDetailsImplementation = hovered;
+  const hoveredAggregate = activeDetailsImplementation
+    ? visibleAggregates.find((item) => item.implementation === activeDetailsImplementation) ?? null
+    : null;
+
+  const pointMotionTransition = useMemo(
+    () => ({ type: "spring" as const, stiffness: 220, damping: 26, mass: 0.72 }),
+    [],
+  );
 
   if (aggregates.length === 0) {
     return (
@@ -172,10 +271,10 @@ function TradeoffMatrixInner({
   const xValues = visiblePoints.map((point) => point.estimatedMemoryBytes).filter((value) => value > 0);
   const yValues = visiblePoints.map((point) => point.meanNs).filter((value) => value > 0);
 
-  const xMin = Math.max(Math.min(...xValues), 1);
-  const xMax = Math.max(...xValues, xMin);
-  const yMin = Math.max(Math.min(...yValues), 1);
-  const yMax = Math.max(...yValues, yMin);
+  const xMin = xValues.length > 0 ? Math.max(Math.min(...xValues), 1) : 1;
+  const xMax = xValues.length > 0 ? Math.max(...xValues, xMin) : 2;
+  const yMin = yValues.length > 0 ? Math.max(Math.min(...yValues), 1) : 1;
+  const yMax = yValues.length > 0 ? Math.max(...yValues, yMin) : 2;
   const latencyUnit = selectLatencyUnit(yMax);
   const memoryUnit = selectMemoryUnit(xMax);
 
@@ -189,54 +288,48 @@ function TradeoffMatrixInner({
   const yLogMin = Math.max(1, yMin * 0.9);
   const yLogMax = Math.max(yMax * 1.1, yLogMin * 1.05);
 
-  useEffect(() => {
-    if (pinnedDetails && !visibleAggregates.some((item) => item.implementation === pinnedDetails)) {
-      setPinnedDetails(null);
-      setHovered(null);
-    }
-  }, [pinnedDetails, visibleAggregates]);
-
-  useEffect(() => {
-    if (!pinnedDetails) return;
-
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-
-      if (overlayRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest('[data-tradeoff-node="true"]')) return;
-
-      setPinnedDetails(null);
-      setHovered(null);
-    };
-
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [pinnedDetails]);
-
-  const activeDetailsImplementation = hovered ?? pinnedDetails;
-  const hoveredAggregate = activeDetailsImplementation
-    ? visibleAggregates.find((item) => item.implementation === activeDetailsImplementation) ?? null
-    : null;
-  const detailsPinned = Boolean(pinnedDetails) && hovered === null;
-
-  const pointMotionTransition = useMemo(
-    () => ({ type: "spring" as const, stiffness: 220, damping: 26, mass: 0.72 }),
-    [],
-  );
-
   return (
-    <AppGlassPanel className="space-y-4">
+    <AppGlassPanel className="space-y-4" data-dashboard-matrix-card="true">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-2xl">Tradeoff Matrix</h2>
           <p className="text-sm text-text-muted">
-            X-axis shows estimated peak memory; Y-axis uses Criterion mean latency with adaptive units.
+            Compare memory use against speed. Hover for details, and click a point to add or remove it from the Inspector.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-right text-sm text-text/82">
-          <p>Pareto points: {paretoFront.length}</p>
-          <p>Showing: {visibleAggregates.length} / {aggregates.length}</p>
+        <div className="w-full max-w-[460px] rounded-lg border border-panel-border/70 bg-bg-elevated/42 p-2.5 text-right text-xs text-text/84">
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            <StatusMetric
+              label="Pareto"
+              value={String(paretoFront.length)}
+              help="Shows how many implementations are currently non-dominated on the speed vs memory frontier."
+            />
+            <StatusMetric
+              label="Visible"
+              value={`${visibleAggregates.length}/${aggregates.length}`}
+              help="Shows how many points are currently in view after optional outlier trimming."
+            />
+          </div>
+          <div className="mt-2 border-t border-panel-border/60 pt-2">
+            <p className="text-left text-[10px] uppercase tracking-[0.12em] text-text-muted">Profiling Snapshot (p50)</p>
+            <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
+              <SnapshotMetric
+                label="Instructions (Ir)"
+                value={formatCompactCount(profilingSnapshot.instructionsP50)}
+                help="Approximate CPU work per operation. Lower usually means faster execution for similar algorithms."
+              />
+              <SnapshotMetric
+                label="L1 Miss Rate"
+                value={formatPercent(profilingSnapshot.l1MissRateP50)}
+                help="Fraction of data accesses missing L1 cache. Lower values usually improve latency consistency."
+              />
+              <SnapshotMetric
+                label="Peak Bytes"
+                value={profilingSnapshot.peakBytesP50 == null ? "n/a" : formatBytes(profilingSnapshot.peakBytesP50)}
+                help="Typical high-water memory footprint while running. Useful for budget-aware deployment limits."
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -257,7 +350,7 @@ function TradeoffMatrixInner({
             onChange={(event) => onHideOutliersChange(event.currentTarget.checked)}
             className="h-4 w-4 rounded border-panel-border bg-bg-elevated"
           />
-          Hide extreme outliers (95th percentile)
+          Hide extreme outliers
         </label>
       </div>
 
@@ -317,18 +410,20 @@ function TradeoffMatrixInner({
         </span>
       </div>
 
-      <div className="rounded-md border border-panel-border bg-bg-elevated/55 p-2">
-        <div className="relative h-full w-full" style={{ height: "clamp(360px, 46vw, 560px)" }}>
+      <div className="rounded-md border border-panel-border bg-bg-elevated/55 p-0.5">
+        <div className="relative w-full" style={{ height: "clamp(300px, 39vw, 500px)" }}>
           <ParentSize>
             {({ width }) => {
               const chartWidth = Math.max(width, MIN_CHART_WIDTH);
               const chartHeight = Math.max(Math.min(chartWidth * CHART_ASPECT, MAX_CHART_HEIGHT), MIN_CHART_HEIGHT);
               const padding = {
-                top: 18,
-                right: chartWidth < 760 ? 24 : 30,
-                bottom: chartWidth < 760 ? 72 : 56,
+                top: 6,
+                right: chartWidth < 760 ? 16 : 22,
+                bottom: chartWidth < 760 ? 50 : 44,
                 left: chartWidth < 760 ? 74 : 98,
               };
+
+              const yAxisCenter = (padding.top + (chartHeight - padding.bottom)) / 2;
 
               const xScale =
                 scaleMode === "log"
@@ -371,8 +466,8 @@ function TradeoffMatrixInner({
 
               const overlayPlacement = hoveredAggregate
                 ? computeOverlayPlacement(
-                    xScale(Math.max(hoveredAggregate.estimatedMemoryBytes, 1)),
-                    yScale(Math.max(hoveredAggregate.meanNs, 1)),
+                    hoverPosition?.x ?? xScale(Math.max(hoveredAggregate.estimatedMemoryBytes, 1)),
+                    hoverPosition?.y ?? yScale(Math.max(hoveredAggregate.meanNs, 1)),
                     chartWidth,
                     chartHeight,
                   )
@@ -381,7 +476,6 @@ function TradeoffMatrixInner({
               return (
                 <>
                   <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="h-full w-full" role="img" aria-label="Memory versus speed scatter matrix with Pareto frontier">
-                    <title>Tradeoff Matrix</title>
                     <desc>Scatter plot of estimated memory and mean latency for each implementation with highlighted Pareto frontier.</desc>
                     <defs>
                       <linearGradient id="paretoGlow" x1="0" x2="1">
@@ -447,11 +541,11 @@ function TradeoffMatrixInner({
                     </text>
                     <text
                       x={26}
-                      y={chartHeight / 2}
+                      y={yAxisCenter}
                       fill={CHART_COLORS.label}
                       fontSize="13"
                       textAnchor="middle"
-                      transform={`rotate(-90, 26, ${chartHeight / 2})`}
+                      transform={`rotate(-90, 26, ${yAxisCenter})`}
                     >
                       Mean Execution Time ({latencyUnit.label})
                     </text>
@@ -512,7 +606,9 @@ function TradeoffMatrixInner({
                     {visibleAggregates.map((point) => {
                       const activeComparison = selectedImplementations.includes(point.implementation);
                       const isHovered = hovered === point.implementation;
-                      const isPinnedNode = pinnedDetails === point.implementation;
+                      const isCrossHighlighted = hoveredImplementation === point.implementation;
+                      const isSolePareto = soleParetoImplementation === point.implementation;
+                      const dimmedByCrossHover = hoveredImplementation !== null && !isCrossHighlighted;
                       const cx = xScale(Math.max(point.estimatedMemoryBytes, 1));
                       const cy = yScale(Math.max(point.meanNs, 1));
 
@@ -534,47 +630,103 @@ function TradeoffMatrixInner({
                           animate={{ x: cx, y: cy }}
                           transition={pointMotionTransition}
                           data-tradeoff-node="true"
-                          onMouseEnter={() => setHovered(point.implementation)}
-                          onMouseLeave={() => setHovered(null)}
+                          onMouseEnter={() => {
+                            setHovered(point.implementation);
+                            setHoveredImplementation(point.implementation);
+                          }}
+                          onMouseMove={(event) => {
+                            const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                            if (!bounds) return;
+                            setHoverPosition({
+                              x: event.clientX - bounds.left,
+                              y: event.clientY - bounds.top,
+                            });
+                          }}
+                          onMouseLeave={() => {
+                            setHovered(null);
+                            setHoverPosition(null);
+                            setHoveredImplementation(null);
+                          }}
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (pinnedDetails === point.implementation) {
-                              setPinnedDetails(null);
-                              setHovered(null);
-                              return;
-                            }
-
-                            setPinnedDetails(point.implementation);
-                            setHovered(null);
+                            setHovered(point.implementation);
+                            setHoveredImplementation(point.implementation);
+                            onToggleImplementation(point.implementation);
                           }}
                           role="button"
                           tabIndex={0}
-                          aria-pressed={isPinnedNode}
-                          aria-label={`${point.implementation}, mean latency ${formatTickWithUnit(point.meanNs, latencyUnit)} ${latencyUnit.label}, estimated memory ${formatTickWithUnit(point.estimatedMemoryBytes, memoryUnit)} ${memoryUnit.label}${isPinnedNode ? ", details pinned" : ""}`}
+                          aria-pressed={activeComparison}
+                          aria-label={`${point.implementation}, mean latency ${formatTickWithUnit(point.meanNs, latencyUnit)} ${latencyUnit.label}, estimated memory ${formatTickWithUnit(point.estimatedMemoryBytes, memoryUnit)} ${memoryUnit.label}${activeComparison ? ", pinned in the inspector" : ", available to add to the inspector"}`}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              if (pinnedDetails === point.implementation) {
-                                setPinnedDetails(null);
-                                setHovered(null);
-                                return;
-                              }
-
-                              setPinnedDetails(point.implementation);
-                              setHovered(null);
+                              setHovered(point.implementation);
+                              setHoveredImplementation(point.implementation);
+                              onToggleImplementation(point.implementation);
                             }
                           }}
+                          style={{
+                            opacity: dimmedByCrossHover ? 0.2 : 1,
+                          }}
                         >
+                          {isSolePareto ? (
+                            <motion.circle
+                              initial={false}
+                              animate={{ r: isCrossHighlighted ? 15.5 : isHovered ? 14.2 : 13.2 }}
+                              transition={{ duration: 0.2, ease: "easeOut" }}
+                              cx={0}
+                              cy={0}
+                              fill="url(#paretoGlow)"
+                              fillOpacity={dimmedByCrossHover ? 0.12 : 0.18}
+                              stroke="url(#paretoGlow)"
+                              strokeOpacity={dimmedByCrossHover ? 0.22 : 0.75}
+                              strokeWidth={1.6}
+                              style={{ filter: "url(#paretoNeon)" }}
+                            />
+                          ) : null}
                           <motion.circle
                             initial={false}
-                            animate={{ r: isPinnedNode ? 8 : isHovered ? 7 : activeComparison ? 6.3 : 5.6 }}
+                            animate={{
+                              r: isCrossHighlighted
+                                ? isSolePareto
+                                  ? 11.2
+                                  : 9.8
+                                : isHovered
+                                  ? isSolePareto
+                                    ? 8.9
+                                    : 7.4
+                                  : activeComparison
+                                    ? isSolePareto
+                                      ? 7.8
+                                      : 6.5
+                                    : isSolePareto
+                                      ? 7
+                                      : 5.6,
+                            }}
                             transition={{ duration: 0.2, ease: "easeOut" }}
                             cx={0}
                             cy={0}
                             fill={pointColor}
-                            fillOpacity={isPinnedNode ? 0.92 : isHovered || activeComparison ? 0.82 : 0.66}
-                            stroke={isPinnedNode || isHovered || activeComparison ? CHART_COLORS.pointActiveStroke : CHART_COLORS.pointStroke}
-                            strokeWidth={isPinnedNode || isHovered || activeComparison ? 2 : 1}
+                            fillOpacity={
+                              dimmedByCrossHover
+                                ? 0.24
+                                : isCrossHighlighted
+                                  ? 0.94
+                                  : isHovered || activeComparison
+                                    ? 0.82
+                                    : 0.66
+                            }
+                            stroke={
+                              isSolePareto || isHovered || activeComparison || isCrossHighlighted
+                                ? CHART_COLORS.pointActiveStroke
+                                : CHART_COLORS.pointStroke
+                            }
+                            strokeWidth={isCrossHighlighted || isHovered || activeComparison ? 2.6 : isSolePareto ? 2.1 : 1}
+                            style={{
+                              filter: isCrossHighlighted || isSolePareto
+                                ? `drop-shadow(0 0 6px ${pointColor}) drop-shadow(0 0 10px ${pointColor})`
+                                : undefined,
+                            }}
                           />
                         </motion.g>
                       );
@@ -583,8 +735,7 @@ function TradeoffMatrixInner({
 
                   {hoveredAggregate ? (
                     <div
-                      ref={overlayRef}
-                      className="pointer-events-auto absolute z-20 min-w-[300px] max-w-[440px] space-y-2 rounded-md border border-primary/45 bg-panel/95 p-3 text-sm text-text shadow-panel backdrop-blur-[10px]"
+                      className="pointer-events-none absolute z-20 min-w-[300px] max-w-[440px] space-y-2 rounded-md border border-primary/45 bg-panel/95 p-3 text-sm text-text shadow-panel backdrop-blur-[10px]"
                       style={
                         overlayPlacement
                           ? {
@@ -612,10 +763,29 @@ function TradeoffMatrixInner({
                         </p>
                       </div>
 
+                      <div className="grid gap-1.5 rounded border border-panel-border/70 bg-bg-elevated/45 p-2 text-xs md:grid-cols-2">
+                        <p className="break-words">
+                          <span className="text-text-muted">Instructions:</span>{" "}
+                          <span className="font-mono text-text">{formatCompactCount(hoveredAggregate.profiling.instructions)}</span>
+                        </p>
+                        <p className="break-words">
+                          <span className="text-text-muted">L1 data miss rate:</span>{" "}
+                          <span className="font-mono text-text">{formatPercent(hoveredAggregate.profiling.l1DataMissRate)}</span>
+                        </p>
+                        <p className="break-words">
+                          <span className="text-text-muted">Alloc churn:</span>{" "}
+                          <span className="font-mono text-text">{formatCompactCount(hoveredAggregate.profiling.totalBytes)} / {formatCompactCount(hoveredAggregate.profiling.peakBytes)}</span>
+                        </p>
+                        <p className="break-words">
+                          <span className="text-text-muted">Churn ratio:</span>{" "}
+                          <span className="font-mono text-text">{hoveredAggregate.profiling.allocationChurnRatio != null ? `${hoveredAggregate.profiling.allocationChurnRatio.toFixed(2)}x` : "n/a"}</span>
+                        </p>
+                      </div>
+
                       <p className="text-xs text-text-muted">
-                        {detailsPinned
-                          ? "Click the node again or anywhere outside this panel to close details."
-                          : "Move away from the node to dismiss details, or click the node to pin this panel."}
+                        {selectedImplementations.includes(hoveredAggregate.implementation)
+                          ? "Click to remove this implementation from the Inspector."
+                          : "Click to add this implementation to the Inspector."}
                       </p>
                     </div>
                   ) : null}
@@ -625,8 +795,6 @@ function TradeoffMatrixInner({
           </ParentSize>
         </div>
       </div>
-
-      <p className="text-sm text-text-muted">Hover a node to inspect metrics. Click a node to pin details, then click it again or outside the panel to close.</p>
     </AppGlassPanel>
   );
 }

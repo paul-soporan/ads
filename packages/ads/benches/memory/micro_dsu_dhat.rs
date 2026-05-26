@@ -6,6 +6,5 @@ mod shared;
 
 fn main() {
     let dhat_dir = shared::resolve_dhat_dir();
-    shared::profile_micro_sequences(&dhat_dir);
-    shared::profile_micro_sequences_indexing(&dhat_dir);
+    shared::profile_micro_dsu(&dhat_dir);
 }

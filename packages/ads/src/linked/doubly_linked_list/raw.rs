@@ -1,7 +1,15 @@
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::traits::core::Sequence;
+use crate::traits::core::{Sequence, SequenceMutGuard};
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics;
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics as SequenceDiagnosticsTrait;
 
 #[derive(Debug)]
 struct Node<T> {
@@ -15,24 +23,8 @@ pub struct DoublyLinkedList<T> {
     head: *mut Node<T>,
     tail: *mut Node<T>,
     len: usize,
-}
-
-#[derive(Clone, Copy)]
-pub struct DoublyCursor<'a, T> {
-    index: usize,
-    node: *const Node<T>,
-    marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> DoublyCursor<'a, T> {
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    pub fn value(&self) -> &'a T {
-        // SAFETY: Cursor lifetime is tied to immutable borrow of the list.
-        unsafe { &(*self.node).value }
-    }
+    #[cfg(any(test, feature = "bench"))]
+    walk_steps: AtomicUsize,
 }
 
 impl<T> Default for DoublyLinkedList<T> {
@@ -41,7 +33,67 @@ impl<T> Default for DoublyLinkedList<T> {
             head: ptr::null_mut(),
             tail: ptr::null_mut(),
             len: 0,
+            #[cfg(any(test, feature = "bench"))]
+            walk_steps: AtomicUsize::new(0),
         }
+    }
+}
+
+pub struct DoublyCursor<'a, T> {
+    index: usize,
+    list: &'a DoublyLinkedList<T>,
+}
+
+pub struct CursorValue<T>(T);
+
+pub struct DoublyMutView<'a, T> {
+    node: *mut Node<T>,
+    _marker: PhantomData<&'a mut DoublyLinkedList<T>>,
+}
+
+impl<T> Deref for CursorValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, T> SequenceMutGuard<T> for DoublyMutView<'a, T> {
+    fn with_mut<R, F>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        unsafe { f(&mut (*self.node).value) }
+    }
+}
+
+impl<'a, T> Clone for DoublyCursor<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> Copy for DoublyCursor<'a, T> {}
+
+impl<'a, T> crate::traits::core::SequenceCursor for DoublyCursor<'a, T> {
+    fn index(&self) -> usize {
+        self.index
+    }
+}
+
+impl<'a, T> DoublyCursor<'a, T> {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn value(&self) -> CursorValue<T>
+    where
+        T: Clone,
+    {
+        let node = self.list.node_at(self.index);
+        assert!(!node.is_null(), "cursor node should be live");
+        unsafe { CursorValue((*node).value.clone()) }
     }
 }
 
@@ -50,7 +102,7 @@ impl<T> DoublyLinkedList<T> {
         Self::default()
     }
 
-    fn node_at_ptr(&self, index: usize) -> *mut Node<T> {
+    fn node_at(&self, index: usize) -> *mut Node<T> {
         if index >= self.len {
             return ptr::null_mut();
         }
@@ -58,7 +110,8 @@ impl<T> DoublyLinkedList<T> {
         if index <= self.len / 2 {
             let mut current = self.head;
             for _ in 0..index {
-                // SAFETY: Traversal remains inside nodes owned by this list.
+                #[cfg(any(test, feature = "bench"))]
+                self.walk_steps.fetch_add(1, Ordering::Relaxed);
                 unsafe {
                     current = (*current).next;
                 }
@@ -66,8 +119,9 @@ impl<T> DoublyLinkedList<T> {
             current
         } else {
             let mut current = self.tail;
-            for _ in 0..(self.len - index - 1) {
-                // SAFETY: Traversal remains inside nodes owned by this list.
+            for _ in 0..(self.len - 1 - index) {
+                #[cfg(any(test, feature = "bench"))]
+                self.walk_steps.fetch_add(1, Ordering::Relaxed);
                 unsafe {
                     current = (*current).prev;
                 }
@@ -79,82 +133,75 @@ impl<T> DoublyLinkedList<T> {
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: self.head,
-            marker: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
 
 pub struct Iter<'a, T> {
     next: *const Node<T>,
-    marker: PhantomData<&'a T>,
+    _marker: PhantomData<&'a DoublyLinkedList<T>>,
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
+impl<'a, T> Iterator for Iter<'a, T>
+where
+    T: Clone,
+{
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next.is_null() {
             return None;
         }
 
-        // SAFETY: Iterator is constructed from immutable list borrow.
         unsafe {
-            let node = &*self.next;
-            self.next = node.next;
-            Some(&node.value)
+            let current = &*self.next;
+            let value = current.value.clone();
+            self.next = current.next;
+            Some(value)
         }
     }
 }
 
 impl<T> Sequence<T> for DoublyLinkedList<T> {
-    type Cursor<'a>
-        = DoublyCursor<'a, T>
-    where
-        Self: 'a;
-
-    type MutView<'a>
-        = &'a mut T
-    where
-        Self: 'a,
-        T: 'a;
+    type Cursor<'a> = DoublyCursor<'a, T> where Self: 'a;
+    type MutView<'a> = DoublyMutView<'a, T> where Self: 'a, T: 'a;
 
     fn push_front(&mut self, value: T) {
-        let node = Box::into_raw(Box::new(Node {
+        let new_node = Box::into_raw(Box::new(Node {
             value,
             prev: ptr::null_mut(),
             next: self.head,
         }));
 
-        // SAFETY: Existing head belongs to this list.
-        unsafe {
-            if !self.head.is_null() {
-                (*self.head).prev = node;
-            } else {
-                self.tail = node;
+        if !self.head.is_null() {
+            unsafe {
+                (*self.head).prev = new_node;
             }
+        } else {
+            self.tail = new_node;
         }
 
-        self.head = node;
+        self.head = new_node;
         self.len += 1;
     }
 
     fn push_back(&mut self, value: T) {
-        let node = Box::into_raw(Box::new(Node {
+        let new_node = Box::into_raw(Box::new(Node {
             value,
             prev: self.tail,
             next: ptr::null_mut(),
         }));
 
-        // SAFETY: Existing tail belongs to this list.
-        unsafe {
-            if !self.tail.is_null() {
-                (*self.tail).next = node;
-            } else {
-                self.head = node;
+        if !self.tail.is_null() {
+            unsafe {
+                (*self.tail).next = new_node;
             }
+        } else {
+            self.head = new_node;
         }
 
-        self.tail = node;
+        self.tail = new_node;
         self.len += 1;
     }
 
@@ -163,17 +210,18 @@ impl<T> Sequence<T> for DoublyLinkedList<T> {
             return None;
         }
 
-        // SAFETY: head points to a node allocated for this list.
+        let old_head = self.head;
         unsafe {
-            let old_head = self.head;
             self.head = (*old_head).next;
             if !self.head.is_null() {
                 (*self.head).prev = ptr::null_mut();
             } else {
                 self.tail = ptr::null_mut();
             }
+
             self.len -= 1;
-            Some(Box::from_raw(old_head).value)
+            let boxed = Box::from_raw(old_head);
+            Some(boxed.value)
         }
     }
 
@@ -182,39 +230,37 @@ impl<T> Sequence<T> for DoublyLinkedList<T> {
             return None;
         }
 
-        // SAFETY: tail points to a node allocated for this list.
+        let old_tail = self.tail;
         unsafe {
-            let old_tail = self.tail;
             self.tail = (*old_tail).prev;
             if !self.tail.is_null() {
                 (*self.tail).next = ptr::null_mut();
             } else {
                 self.head = ptr::null_mut();
             }
+
             self.len -= 1;
-            Some(Box::from_raw(old_tail).value)
+            let boxed = Box::from_raw(old_tail);
+            Some(boxed.value)
         }
     }
 
     fn cursor_at<'a>(&'a self, index: usize) -> Option<Self::Cursor<'a>> {
-        let node = self.node_at_ptr(index);
-        if node.is_null() {
+        if index >= self.len {
             return None;
         }
-        Some(DoublyCursor {
-            index,
-            node,
-            marker: PhantomData,
-        })
+        Some(DoublyCursor { index, list: self })
     }
 
     fn get_mut<'a>(&'a mut self, index: usize) -> Option<Self::MutView<'a>> {
-        let node = self.node_at_ptr(index);
+        let node = self.node_at(index);
         if node.is_null() {
             return None;
         }
-        // SAFETY: Mutable borrow of self guarantees exclusive access.
-        unsafe { Some(&mut (*node).value) }
+        Some(DoublyMutView {
+            node,
+            _marker: PhantomData,
+        })
     }
 
     fn clear(&mut self) {
@@ -223,6 +269,13 @@ impl<T> Sequence<T> for DoublyLinkedList<T> {
 
     fn len(&self) -> usize {
         self.len
+    }
+}
+
+#[cfg(any(test, feature = "bench"))]
+impl<T> SequenceDiagnostics for DoublyLinkedList<T> {
+    fn walk_steps(&self) -> usize {
+        self.walk_steps.load(Ordering::Relaxed)
     }
 }
 

@@ -15,6 +15,56 @@ import type {
   WorkloadFamily,
 } from "./types";
 
+function normalizeWorkloadName(workload: string, payload: string): string {
+  const normalized = workload.toLowerCase();
+  const normalizedPayload = payload.toLowerCase();
+
+  if (normalized === "micro_sequences" && normalizedPayload === "u64") {
+    return "micro_sequences_u64";
+  }
+
+  if (
+    normalizedPayload === "u64" &&
+    (normalized === "macro_read_heavy" ||
+      normalized === "macro_write_heavy" ||
+      normalized === "macro_thrashing" ||
+      normalized === "micro_maps" ||
+      normalized === "micro_heaps" ||
+      normalized === "micro_dsu" ||
+      normalized === "micro_sequences" ||
+      normalized === "micro_sequences_indexing" ||
+      normalized === "sweep_btree_cache" ||
+      normalized === "sweep_hash_collisions" ||
+      normalized === "motivational_heap_merge" ||
+      normalized === "motivational_dsu_connectivity")
+  ) {
+    return `${normalized}_u64`;
+  }
+
+  return normalized;
+}
+
+function normalizeOperationName(operation: string): string {
+  const normalized = operation.toLowerCase();
+
+  if (normalized === "mix_read" || normalized === "mix_write") {
+    return "mix";
+  }
+
+  return normalized;
+}
+
+function normalizeImplementationName(implementation: string): string {
+  const normalized = implementation.toLowerCase().replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  if (normalized === "std_binary_heap_min") {
+    return "std_binary_heap";
+  }
+  if (normalized.startsWith("ads_")) {
+    return normalized.slice(4);
+  }
+  return normalized;
+}
+
 function inferWorkloadFamily(group: string): WorkloadFamily {
   const normalizedGroup = group.toLowerCase();
 
@@ -37,68 +87,6 @@ function inferWorkloadFamily(group: string): WorkloadFamily {
   ) {
     return "sweeps";
   }
-
-  return "other";
-}
-
-function inferOperation(record: RawCriterionRecord): string {
-  const blob = `${record.function} ${record.path}`.toLowerCase();
-
-  if (blob.includes("contains_zipf")) return "contains_zipf";
-  if (blob.includes("contains_temporal")) return "contains_temporal";
-  if (blob.includes("contains_mixed") || blob.includes("read_heavy")) return "contains_mixed";
-  if (blob.includes("thrash")) return "thrash";
-  if (blob.includes("bulk")) return "bulk_insert";
-  if (blob.includes("insert")) return "insert";
-  if (blob.includes("remove")) return "remove";
-  if (blob.includes("contains")) return "contains";
-  if (blob.includes("write_heavy") || blob.includes("mix")) return "mix";
-  if (blob.includes("push_pop")) return "push_pop";
-
-  return "unknown";
-}
-
-function inferDistribution(record: RawCriterionRecord): Distribution {
-  const operation = inferOperation(record);
-  const workload = inferWorkloadFamily(record.group);
-  const blob = `${record.group} ${record.function} ${record.path} ${operation}`.toLowerCase();
-
-  if (blob.includes("zipf")) return "zipfian";
-  if (blob.includes("temporal")) return "temporal";
-  if (blob.includes("sorted")) return "sorted";
-  if (blob.includes("uniform")) return "uniform";
-  if (blob.includes("mixed") || blob.includes("thrash") || blob.includes("read_heavy") || blob.includes("write_heavy")) {
-    return "mixed";
-  }
-
-  if (operation === "contains_zipf") return "zipfian";
-  if (operation === "contains_temporal") return "temporal";
-  if (operation === "contains_mixed" || operation === "mix" || operation === "thrash") return "mixed";
-
-  if (workload === "micro" || workload === "sweeps") {
-    return "uniform";
-  }
-
-  return "other";
-}
-
-function inferPayload(record: RawCriterionRecord): PayloadKind {
-  const blob = `${record.group} ${record.function} ${record.path}`.toLowerCase();
-
-  if (blob.includes("string")) return "string";
-  if (blob.includes("large_payload") || blob.includes("large")) return "large_payload";
-  if (blob.includes("u64") || blob.includes("n1k") || blob.includes("n10k") || blob.includes("micro_sequences")) {
-    return "u64";
-  }
-
-  return "other";
-}
-
-function inferVariant(implementation: string): VariantKind {
-  if (implementation.includes("_safe") || implementation.startsWith("safe_")) return "safe";
-  if (implementation.includes("_raw") || implementation.startsWith("raw_")) return "raw";
-  if (implementation.includes("_arena") || implementation.startsWith("arena_")) return "arena";
-  if (implementation.startsWith("std_") || implementation.includes("std_")) return "std";
 
   return "other";
 }
@@ -130,17 +118,21 @@ function pickBestCriterionSample(records: RawCriterionRecord[]): RawCriterionRec
 }
 
 function toCriterionRecord(operationGroup: RawOperationGroup, record: RawCriterionRecord): CriterionRecord {
-  const workload = inferWorkloadFamily(operationGroup.join.workload);
-  const operation = operationGroup.join.operation;
-  const payload = operationGroup.join.payload as PayloadKind;
+  const payload = (operationGroup.join.payload as string).toLowerCase();
+  const workloadName = normalizeWorkloadName(operationGroup.join.workload, payload);
+  const operation = normalizeOperationName(operationGroup.join.operation);
+  const implementation = normalizeImplementationName(operationGroup.join.implementation);
+  const workload = inferWorkloadFamily(workloadName);
+  const distribution = operationGroup.join.distribution as Distribution;
+  const normalizedPayload = payload as PayloadKind;
   const variant = operationGroup.join.variant as VariantKind;
-  const implementation = operationGroup.join.implementation;
 
   return {
     id: `${operationGroup.join.join_key}:${record.sample}`,
+    joinKey: operationGroup.join.join_key,
     path: record.path,
-    group: operationGroup.join.workload,
-    workloadName: operationGroup.join.workload,
+    group: workloadName,
+    workloadName,
     functionName: record.function,
     operation,
     implementation,
@@ -153,10 +145,10 @@ function toCriterionRecord(operationGroup: RawOperationGroup, record: RawCriteri
     stdDevNs: record.std_dev.point_estimate,
     throughputElements: record.throughput_elements,
     workload,
-    distribution: inferDistribution(record),
-    payload,
+    distribution,
+    payload: normalizedPayload,
     variant,
-    category: inferCategory(operationGroup.join.workload),
+    category: inferCategory(workloadName),
   };
 }
 
@@ -242,6 +234,11 @@ export function normalizeBenchmarkArtifact(raw: RawBenchmarkArtifact): Normalize
   const dhat: DhatRecord[] = [];
 
   for (const operationGroup of raw.operations) {
+    const payload = (operationGroup.join.payload as string).toLowerCase();
+    const workloadName = normalizeWorkloadName(operationGroup.join.workload, payload);
+    const operationName = normalizeOperationName(operationGroup.join.operation);
+    const implementationName = normalizeImplementationName(operationGroup.join.implementation);
+
     const bestCriterion = pickBestCriterionSample(operationGroup.criterion);
     for (const record of bestCriterion) {
       const normalized = toCriterionRecord(operationGroup, record);
@@ -253,11 +250,13 @@ export function normalizeBenchmarkArtifact(raw: RawBenchmarkArtifact): Normalize
 
     for (const record of operationGroup.callgrind) {
       callgrind.push({
+        joinKey: operationGroup.join.join_key,
         path: record.path,
-        implementation: operationGroup.join.implementation,
-        operation: operationGroup.join.operation,
-        workload: operationGroup.join.workload,
-        payload: operationGroup.join.payload,
+        implementation: implementationName,
+        operation: operationName,
+        distribution: operationGroup.join.distribution as Distribution,
+        workload: workloadName,
+        payload,
         size: operationGroup.join.size,
         metrics: record.metrics,
       });
@@ -266,11 +265,13 @@ export function normalizeBenchmarkArtifact(raw: RawBenchmarkArtifact): Normalize
     for (const record of operationGroup.dhat) {
       const bytes = toDhatBytes(record);
       dhat.push({
+        joinKey: operationGroup.join.join_key,
         path: record.path,
-        implementation: operationGroup.join.implementation,
-        operation: operationGroup.join.operation,
-        workload: operationGroup.join.workload,
-        payload: operationGroup.join.payload,
+        implementation: implementationName,
+        operation: operationName,
+        distribution: operationGroup.join.distribution as Distribution,
+        workload: workloadName,
+        payload,
         size: operationGroup.join.size,
         totalBytes: bytes.totalBytes,
         maxBytes: bytes.maxBytes,

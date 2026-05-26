@@ -1,6 +1,6 @@
 use std::collections::{LinkedList, VecDeque};
 
-use ads::traits::core::Sequence;
+use ads::traits::core::{Sequence, Map, SequenceCursor};
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 type SinglySafe = ads::linked::singly_linked_list::safe::SinglyLinkedList<u64>;
@@ -65,10 +65,29 @@ where
     black_box(checksum)
 }
 
-fn sequence_benches(c: &mut Criterion) {
-    let mut group = c.benchmark_group("micro_sequences");
+fn sequence_indexing_workload<S>(size: usize) -> usize
+where
+    S: Sequence<u64> + Default,
+{
+    let mut values = S::default();
+    for i in 0..size {
+        values.push_back(i as u64);
+    }
 
-    for &size in &[1_000usize, 10_000usize, 100_000usize] {
+    let mut checksum = 0usize;
+    // Access every 10th element
+    for i in (0..size).step_by(10) {
+        if let Some(cursor) = values.cursor_at(i) {
+            checksum = checksum.wrapping_add(cursor.index());
+        }
+    }
+    black_box(checksum)
+}
+
+fn sequence_benches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("micro_sequences_u64");
+
+    for &size in &[1_000usize, 10_000usize] {
         group.throughput(Throughput::Elements(size as u64));
         group.bench_function(BenchmarkId::new("push_pop/std_vec", size), |b| {
             b.iter(|| vec_queue_like_workload(size));
@@ -79,22 +98,22 @@ fn sequence_benches(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("push_pop/std_linked_list", size), |b| {
             b.iter(|| linked_list_workload(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/singly_safe", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_singly_safe", size), |b| {
             b.iter(|| ads_sequence_workload::<SinglySafe>(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/singly_raw", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_singly_raw", size), |b| {
             b.iter(|| ads_sequence_workload::<SinglyRaw>(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/singly_arena", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_singly_arena", size), |b| {
             b.iter(|| ads_sequence_workload::<SinglyArena>(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/doubly_safe", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_doubly_safe", size), |b| {
             b.iter(|| ads_sequence_workload::<DoublySafe>(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/doubly_raw", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_doubly_raw", size), |b| {
             b.iter(|| ads_sequence_workload::<DoublyRaw>(size));
         });
-        group.bench_function(BenchmarkId::new("push_pop/doubly_arena", size), |b| {
+        group.bench_function(BenchmarkId::new("push_pop/ads_doubly_arena", size), |b| {
             b.iter(|| ads_sequence_workload::<DoublyArena>(size));
         });
     }
@@ -102,5 +121,34 @@ fn sequence_benches(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(micro_sequences, sequence_benches);
+fn indexing_benches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("micro_sequences_indexing_u64");
+
+    for &size in &[100usize, 1_000usize] {
+        group.throughput(Throughput::Elements(size as u64 / 10));
+
+        group.bench_function(BenchmarkId::new("index/ads_singly_safe", size), |b| {
+            b.iter(|| sequence_indexing_workload::<SinglySafe>(size));
+        });
+        group.bench_function(BenchmarkId::new("index/ads_doubly_safe", size), |b| {
+            b.iter(|| sequence_indexing_workload::<DoublySafe>(size));
+        });
+        group.bench_function(BenchmarkId::new("index/ads_skip_arena", size), |b| {
+            let mut list = ads::linked::skip_list::arena::SkipList::new();
+            for i in 0..size { list.insert(i as u64, i as u64); }
+            b.iter(|| {
+                let mut checksum = 0usize;
+                for i in (0..size).step_by(10) {
+                    if let Some(c) = list.cursor_at(i) {
+                        checksum = checksum.wrapping_add(c.index());
+                    }
+                }
+                black_box(checksum)
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(micro_sequences, sequence_benches, indexing_benches);
 criterion_main!(micro_sequences);

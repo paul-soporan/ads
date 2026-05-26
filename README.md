@@ -68,7 +68,3 @@ For more detailed information, please refer to the following sub-READMEs:
 
 1. [**Core Library & Data Structures**](./packages/ads/README.md): Detailed information about the implemented data structures, their memory variants, and the trait system.
 2. [**Benchmarking Suite**](./packages/ads/benches/README.md): Information on how to run, configure, and interpret the benchmarks.
-
----
-
-*For detailed architectural plans and design principles, see [PLAN.md](./PLAN.md) and [DESIGN.md](./DESIGN.md).*

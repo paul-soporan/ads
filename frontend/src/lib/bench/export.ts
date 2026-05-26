@@ -6,6 +6,16 @@ export interface ComparisonExportRow {
   estimatedMemoryBytes: number;
   speedLabel: string;
   memoryLabel: string;
+  instructions?: number | null;
+  instructionLabel?: string;
+  l1DataMissRate?: number | null;
+  l1DataMissRateLabel?: string;
+}
+
+export interface LeaderboardProfilingByJoinKey {
+  instructionsByJoinKey: Map<string, number>;
+  l1DataMissRateByJoinKey: Map<string, number>;
+  peakBytesByJoinKey: Map<string, number>;
 }
 
 function csvEscape(value: string): string {
@@ -15,7 +25,11 @@ function csvEscape(value: string): string {
   return value;
 }
 
-export function leaderboardToCsv(records: CriterionRecord[]): string {
+export function leaderboardToCsv(
+  records: CriterionRecord[],
+  profiling?: LeaderboardProfilingByJoinKey,
+): string {
+  const includeProfiling = Boolean(profiling);
   const header = [
     "implementation",
     "distribution",
@@ -27,8 +41,14 @@ export function leaderboardToCsv(records: CriterionRecord[]): string {
     "ci_upper_ns",
     "throughput_elements",
   ];
+
+  if (includeProfiling) {
+    header.push("instructions_ir", "l1_data_miss_rate", "peak_bytes");
+  }
+
   const lines = records.map((record) =>
-    [
+    (() => {
+      const row = [
       record.implementation,
       record.distribution,
       record.payload,
@@ -38,37 +58,81 @@ export function leaderboardToCsv(records: CriterionRecord[]): string {
       String(Math.round(record.ciLowerNs)),
       String(Math.round(record.ciUpperNs)),
       String(record.throughputElements ?? ""),
-    ]
-      .map(csvEscape)
-      .join(","),
+      ];
+
+      if (includeProfiling && profiling) {
+        const instructions = profiling.instructionsByJoinKey.get(record.joinKey);
+        const l1MissRate = profiling.l1DataMissRateByJoinKey.get(record.joinKey);
+        const peakBytes = profiling.peakBytesByJoinKey.get(record.joinKey);
+        row.push(
+          instructions != null ? String(Math.round(instructions)) : "",
+          l1MissRate != null ? l1MissRate.toFixed(6) : "",
+          peakBytes != null ? String(Math.round(peakBytes)) : "",
+        );
+      }
+
+      return row.map(csvEscape).join(",");
+    })(),
   );
 
   return [header.join(","), ...lines].join("\n");
 }
 
-export function leaderboardToMarkdown(records: CriterionRecord[]): string {
-  const header = [
-    "| Implementation | Distribution | Payload | Operation | Size | Mean (ns) | CI Lower | CI Upper | Throughput |",
-    "|---|---|---|---|---:|---:|---:|---:|---:|",
-  ];
+export function leaderboardToMarkdown(
+  records: CriterionRecord[],
+  profiling?: LeaderboardProfilingByJoinKey,
+): string {
+  const includeProfiling = Boolean(profiling);
+  const header = includeProfiling
+    ? [
+        "| Implementation | Distribution | Payload | Operation | Size | Mean (ns) | CI Lower | CI Upper | Throughput | Instructions (Ir) | L1 Data Miss Rate | Peak Bytes |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+      ]
+    : [
+        "| Implementation | Distribution | Payload | Operation | Size | Mean (ns) | CI Lower | CI Upper | Throughput |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|",
+      ];
 
   const rows = records.map(
-    (record) =>
-      `| ${record.implementation} | ${record.distribution} | ${record.payload} | ${record.operation} | ${record.size.toLocaleString()} | ${Math.round(record.meanNs).toLocaleString()} | ${Math.round(record.ciLowerNs).toLocaleString()} | ${Math.round(record.ciUpperNs).toLocaleString()} | ${(record.throughputElements ?? 0).toLocaleString()} |`,
+    (record) => {
+      if (!includeProfiling || !profiling) {
+        return `| ${record.implementation} | ${record.distribution} | ${record.payload} | ${record.operation} | ${record.size.toLocaleString()} | ${Math.round(record.meanNs).toLocaleString()} | ${Math.round(record.ciLowerNs).toLocaleString()} | ${Math.round(record.ciUpperNs).toLocaleString()} | ${(record.throughputElements ?? 0).toLocaleString()} |`;
+      }
+
+      const instructions = profiling.instructionsByJoinKey.get(record.joinKey);
+      const l1MissRate = profiling.l1DataMissRateByJoinKey.get(record.joinKey);
+      const peakBytes = profiling.peakBytesByJoinKey.get(record.joinKey);
+
+      return `| ${record.implementation} | ${record.distribution} | ${record.payload} | ${record.operation} | ${record.size.toLocaleString()} | ${Math.round(record.meanNs).toLocaleString()} | ${Math.round(record.ciLowerNs).toLocaleString()} | ${Math.round(record.ciUpperNs).toLocaleString()} | ${(record.throughputElements ?? 0).toLocaleString()} | ${instructions != null ? Math.round(instructions).toLocaleString() : "n/a"} | ${l1MissRate != null ? `${(l1MissRate * 100).toFixed(3)}%` : "n/a"} | ${peakBytes != null ? Math.round(peakBytes).toLocaleString() : "n/a"} |`;
+    },
   );
 
   return [...header, ...rows].join("\n");
 }
 
 export function comparisonToCsv(rows: ComparisonExportRow[]): string {
-  const header = ["implementation", "mean_ns", "estimated_memory_bytes", "speed_delta", "memory_delta"];
+  const header = [
+    "implementation",
+    "mean_ns",
+    "estimated_memory_bytes",
+    "instructions_ir",
+    "l1_data_miss_rate",
+    "speed_delta",
+    "memory_delta",
+    "instruction_delta",
+    "l1_data_miss_rate_delta",
+  ];
   const lines = rows.map((row) =>
     [
       row.implementation,
       String(Math.round(row.meanNs)),
       String(Math.round(row.estimatedMemoryBytes)),
+      row.instructions != null ? String(Math.round(row.instructions)) : "",
+      row.l1DataMissRate != null ? row.l1DataMissRate.toFixed(6) : "",
       row.speedLabel,
       row.memoryLabel,
+      row.instructionLabel ?? "",
+      row.l1DataMissRateLabel ?? "",
     ]
       .map(csvEscape)
       .join(","),
@@ -79,13 +143,13 @@ export function comparisonToCsv(rows: ComparisonExportRow[]): string {
 
 export function comparisonToMarkdown(rows: ComparisonExportRow[]): string {
   const header = [
-    "| Implementation | Mean (ns) | Est. Memory (bytes) | Speed Delta | Memory Delta |",
-    "|---|---:|---:|---:|---:|",
+    "| Implementation | Mean (ns) | Est. Memory (bytes) | Instructions (Ir) | L1 Data Miss Rate | Speed Delta | Memory Delta | Instruction Delta | L1 Miss Delta |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
   ];
 
   const lines = rows.map(
     (row) =>
-      `| ${row.implementation} | ${Math.round(row.meanNs).toLocaleString()} | ${Math.round(row.estimatedMemoryBytes).toLocaleString()} | ${row.speedLabel} | ${row.memoryLabel} |`,
+      `| ${row.implementation} | ${Math.round(row.meanNs).toLocaleString()} | ${Math.round(row.estimatedMemoryBytes).toLocaleString()} | ${row.instructions != null ? Math.round(row.instructions).toLocaleString() : "n/a"} | ${row.l1DataMissRate != null ? `${(row.l1DataMissRate * 100).toFixed(3)}%` : "n/a"} | ${row.speedLabel} | ${row.memoryLabel} | ${row.instructionLabel ?? "n/a"} | ${row.l1DataMissRateLabel ?? "n/a"} |`,
   );
 
   return [...header, ...lines].join("\n");

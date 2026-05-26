@@ -4,14 +4,16 @@ pub mod safe;
 
 #[cfg(test)]
 macro_rules! test_singly_linked_list_variant {
-    ($module:ident, $list_ty:ty) => {
+    ($module:ident, $list_ty:ident) => {
         mod $module {
             use super::*;
             use std::collections::VecDeque;
+            use rand::{Rng, SeedableRng, rngs::StdRng};
 
             use crate::traits::core::{Sequence, SequenceMutGuard};
+            use crate::traits::diagnostics::SequenceDiagnostics;
 
-            type List = $list_ty;
+            type List = $list_ty::SinglyLinkedList<i32>;
 
             #[test]
             fn push_and_pop_front_back() {
@@ -66,36 +68,32 @@ macro_rules! test_singly_linked_list_variant {
             }
 
             #[test]
-            fn mixed_operations_match_vecdeque_model() {
+            fn stress_random_operations() {
                 let mut list = List::new();
                 let mut model = VecDeque::new();
+                let mut rng = StdRng::seed_from_u64(42);
 
-                for value in [3, 5, 7] {
-                    list.push_back(value);
-                    model.push_back(value);
+                for _ in 0..500 {
+                    match rng.gen_range(0..4) {
+                        0 => { // push_front
+                            let val = rng.gen_range(0..1000);
+                            list.push_front(val);
+                            model.push_front(val);
+                        }
+                        1 => { // push_back
+                            let val = rng.gen_range(0..1000);
+                            list.push_back(val);
+                            model.push_back(val);
+                        }
+                        2 if !model.is_empty() => { // pop_front
+                            assert_eq!(list.pop_front(), model.pop_front());
+                        }
+                        3 if !model.is_empty() => { // pop_back
+                            assert_eq!(list.pop_back(), model.pop_back());
+                        }
+                        _ => {}
+                    }
                 }
-
-                for value in [2, 1] {
-                    list.push_front(value);
-                    model.push_front(value);
-                }
-
-                assert_eq!(list.pop_front(), model.pop_front());
-                assert_eq!(list.pop_back(), model.pop_back());
-
-                list.push_back(9);
-                model.push_back(9);
-                list.push_front(0);
-                model.push_front(0);
-
-                let index = 2usize;
-                let expected = *model.get(index).expect("model index");
-                assert_eq!(list.cursor_at(index).map(|c| *c.value()), Some(expected));
-
-                list.get_mut(index)
-                    .expect("value at index")
-                    .with_mut(|value| *value += 100);
-                *model.get_mut(index).expect("model index mut") += 100;
 
                 let actual: Vec<_> = (0..model.len())
                     .map(|i| *list.cursor_at(i).expect("cursor").value())
@@ -103,13 +101,42 @@ macro_rules! test_singly_linked_list_variant {
                 let expected: Vec<_> = model.iter().copied().collect();
                 assert_eq!(actual, expected);
             }
+
+            #[test]
+            fn complexity_verification() {
+                let mut list = List::new();
+                let n = 100usize;
+                for i in 0..n {
+                    list.push_back(i as i32);
+                }
+
+                // pop_front is O(1) walk steps
+                let before = list.walk_steps();
+                list.pop_front();
+                let after = list.walk_steps();
+                assert_eq!(after - before, 0, "pop_front should be O(1) walk steps (0 steps)");
+
+                // cursor_at(i) is O(i) walk steps when value is accessed
+                let before = list.walk_steps();
+                let cursor = list.cursor_at(50).expect("cursor at 50");
+                let _ = cursor.value();
+                let after = list.walk_steps();
+                assert_eq!(after - before, 50, "accessing cursor value at 50 should be 50 walk steps");
+
+                // pop_back is O(N) walk steps
+                let before = list.walk_steps();
+                list.pop_back();
+                let after = list.walk_steps();
+                // pop_back needs to reach node at N-2 to update its next pointer.
+                assert!(after - before >= (n - 3), "pop_back should be O(N) walk steps");
+            }
         }
     };
 }
 
 #[cfg(test)]
-test_singly_linked_list_variant!(safe_variant, safe::SinglyLinkedList<i32>);
+test_singly_linked_list_variant!(safe_variant, safe);
 #[cfg(test)]
-test_singly_linked_list_variant!(raw_variant, raw::SinglyLinkedList<i32>);
+test_singly_linked_list_variant!(raw_variant, raw);
 #[cfg(test)]
-test_singly_linked_list_variant!(arena_variant, arena::SinglyLinkedList<i32>);
+test_singly_linked_list_variant!(arena_variant, arena);

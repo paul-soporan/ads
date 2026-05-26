@@ -57,6 +57,7 @@ export interface RawJoinKeys {
   workload: string;
   payload: string;
   operation: string;
+  distribution: Distribution;
   implementation: string;
   size: number;
   variant: VariantKind;
@@ -78,6 +79,7 @@ export type VariantKind = "safe" | "raw" | "arena" | "std" | "other";
 
 export interface CriterionRecord {
   id: string;
+  joinKey: string;
   path: string;
   group: string;
   workloadName: string;
@@ -100,9 +102,11 @@ export interface CriterionRecord {
 }
 
 export interface CallgrindRecord {
+  joinKey: string;
   path: string;
   implementation: string;
   operation: string;
+  distribution: Distribution;
   workload: string;
   payload: string;
   size: number;
@@ -110,9 +114,11 @@ export interface CallgrindRecord {
 }
 
 export interface DhatRecord {
+  joinKey: string;
   path: string;
   implementation: string;
   operation: string;
+  distribution: Distribution;
   workload: string;
   payload: string;
   size: number;

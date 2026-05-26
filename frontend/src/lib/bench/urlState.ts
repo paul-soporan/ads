@@ -11,14 +11,30 @@ const PARAMS = {
   matrixScale: "mx",
   matrixOutliers: "out",
   advancedFilters: "adv",
+  profiling: "pf",
+  leaderboardSort: "ls",
+  leaderboardSortDir: "ld",
 } as const;
 
 export type MatrixScaleMode = "log" | "linear";
+export type LeaderboardSortKey =
+  | "implementation"
+  | "operation"
+  | "size"
+  | "meanNs"
+  | "instructions"
+  | "l1MissRate"
+  | "peakBytes"
+  | "throughput";
+export type LeaderboardSortDirection = "asc" | "desc";
 
 export interface DashboardViewState {
   matrixScale: MatrixScaleMode;
   hideOutliers: boolean;
   showAdvancedFilters: boolean;
+  showProfiling: boolean;
+  leaderboardSortKey: LeaderboardSortKey;
+  leaderboardSortDirection: LeaderboardSortDirection;
 }
 
 export interface ParsedUrlState {
@@ -38,9 +54,32 @@ const DEFAULT_FILTERS: DashboardFilters = {
 
 const DEFAULT_VIEW: DashboardViewState = {
   matrixScale: "log",
-  hideOutliers: true,
+  hideOutliers: false,
   showAdvancedFilters: false,
+  showProfiling: false,
+  leaderboardSortKey: "meanNs",
+  leaderboardSortDirection: "asc",
 };
+
+function parseLeaderboardSortKey(value: string | null): LeaderboardSortKey {
+  if (
+    value === "implementation" ||
+    value === "operation" ||
+    value === "size" ||
+    value === "instructions" ||
+    value === "l1MissRate" ||
+    value === "peakBytes" ||
+    value === "throughput"
+  ) {
+    return value;
+  }
+
+  return "meanNs";
+}
+
+function parseLeaderboardSortDirection(value: string | null): LeaderboardSortDirection {
+  return value === "desc" ? "desc" : "asc";
+}
 
 function normalizeSearch(value: string | null): string {
   if (!value) return "";
@@ -85,8 +124,11 @@ export function parseUrlState(params: URLSearchParams, options: DashboardOptionL
     selectedImplementations: [],
     view: {
       matrixScale: params.get(PARAMS.matrixScale) === "linear" ? "linear" : DEFAULT_VIEW.matrixScale,
-      hideOutliers: params.get(PARAMS.matrixOutliers) !== "0",
+      hideOutliers: params.get(PARAMS.matrixOutliers) === "1",
       showAdvancedFilters: params.get(PARAMS.advancedFilters) === "1",
+      showProfiling: params.get(PARAMS.profiling) === "1",
+      leaderboardSortKey: parseLeaderboardSortKey(params.get(PARAMS.leaderboardSort)),
+      leaderboardSortDirection: parseLeaderboardSortDirection(params.get(PARAMS.leaderboardSortDir)),
     },
   };
 
@@ -125,6 +167,11 @@ export function serializeUrlState(
   if (view.matrixScale !== DEFAULT_VIEW.matrixScale) params.set(PARAMS.matrixScale, view.matrixScale);
   if (view.hideOutliers !== DEFAULT_VIEW.hideOutliers) params.set(PARAMS.matrixOutliers, view.hideOutliers ? "1" : "0");
   if (view.showAdvancedFilters) params.set(PARAMS.advancedFilters, "1");
+  if (view.showProfiling !== DEFAULT_VIEW.showProfiling) params.set(PARAMS.profiling, view.showProfiling ? "1" : "0");
+  if (view.leaderboardSortKey !== DEFAULT_VIEW.leaderboardSortKey) params.set(PARAMS.leaderboardSort, view.leaderboardSortKey);
+  if (view.leaderboardSortDirection !== DEFAULT_VIEW.leaderboardSortDirection) {
+    params.set(PARAMS.leaderboardSortDir, view.leaderboardSortDirection);
+  }
 
   return params.toString();
 }

@@ -157,12 +157,12 @@ where
     N: BTreeNodeViewLike<K>,
 {
     if let Some(root) = root {
-        check_node::<K, N>(root, degree, true);
+        check_node::<K, N>(root, degree, true, None, None);
     }
 }
 
 #[cfg(test)]
-fn check_node<K, N>(node: N, t: usize, is_root: bool)
+fn check_node<K, N>(node: N, t: usize, is_root: bool, min: Option<K>, max: Option<K>) -> usize
 where
     K: Ord + Clone + std::fmt::Debug,
     N: BTreeNodeViewLike<K>,
@@ -171,37 +171,84 @@ where
     let key_count = keys.len();
 
     if !is_root {
-        assert!(key_count >= t - 1, "node underflow");
+        assert!(key_count >= t - 1, "node underflow: expected >= {}, found {}", t-1, key_count);
     }
-    assert!(key_count < 2 * t, "node overflow");
+    assert!(key_count <= 2 * t - 1, "node overflow: expected <= {}, found {}", 2*t-1, key_count);
 
-    for i in 0..key_count.saturating_sub(1) {
-        assert!(keys[i] <= keys[i + 1], "keys must be sorted");
+    for i in 0..key_count {
+        if let Some(ref m) = min {
+            assert!(keys[i] > *m, "key {:?} must be greater than min {:?}", keys[i], m);
+        }
+        if let Some(ref m) = max {
+            assert!(keys[i] < *m, "key {:?} must be less than max {:?}", keys[i], m);
+        }
+        if i > 0 {
+            assert!(keys[i-1] < keys[i], "keys must be strictly increasing and unique (in this test)");
+        }
     }
 
     let children = node.children_vec();
+    let mut total_count = key_count;
+
     if node.is_leaf_node() {
         assert!(children.is_empty(), "leaf nodes must not have children");
     } else {
         assert_eq!(children.len(), key_count + 1, "invalid child count");
-        for child in children {
-            assert!(child.has_parent(), "child must have a parent");
-            check_node::<K, N>(child, t, false);
+        for i in 0..children.len() {
+            let child_min = if i == 0 { min.clone() } else { Some(keys[i-1].clone()) };
+            let child_max = if i == key_count { max.clone() } else { Some(keys[i].clone()) };
+            
+            assert!(children[i].has_parent(), "child must have a parent");
+            total_count += check_node::<K, N>(children[i].clone(), t, false, child_min, child_max);
         }
     }
+    total_count
 }
 
 #[cfg(test)]
 macro_rules! test_b_tree_variant {
-    ($module:ident, $tree_ty:ty) => {
+    ($module:ident, $tree_ty:ident, $t:expr) => {
         mod $module {
             use super::*;
-            use std::collections::BTreeSet;
+            use std::collections::BTreeMap;
+            use rand::{Rng, SeedableRng, rngs::StdRng};
+            use std::sync::{Arc, atomic::{AtomicUsize, Ordering as AtomicOrdering}};
 
             use crate::traits::core::Map;
             use crate::traits::diagnostics::TreeDiagnostics;
 
-            type Tree = $tree_ty;
+            #[derive(Debug, Clone)]
+            struct CountedKey {
+                value: i32,
+                comparisons: Arc<AtomicUsize>,
+            }
+
+            impl CountedKey {
+                fn new(value: i32, comparisons: &Arc<AtomicUsize>) -> Self {
+                    Self { value, comparisons: comparisons.clone() }
+                }
+            }
+
+            impl Eq for CountedKey {}
+            impl PartialEq for CountedKey {
+                fn eq(&self, other: &Self) -> bool { self.value == other.value }
+            }
+
+            impl Ord for CountedKey {
+                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                    self.comparisons.fetch_add(1, AtomicOrdering::Relaxed);
+                    self.value.cmp(&other.value)
+                }
+            }
+
+            impl PartialOrd for CountedKey {
+                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                    Some(self.cmp(other))
+                }
+            }
+
+            type Tree = $tree_ty::BTree<i32, i32, $t>;
+            type ComplexityTree = $tree_ty::BTree<CountedKey, i32, $t>;
 
             #[test]
             fn empty_tree() {
@@ -218,7 +265,7 @@ macro_rules! test_b_tree_variant {
             fn insert_contains_and_boundaries() {
                 let mut tree = Tree::new();
                 for value in [10, 20, 5, 6, 12] {
-                    tree.insert(value, ());
+                    tree.insert(value, value * 10);
                 }
 
                 assert!(tree.contains_key(&10));
@@ -233,7 +280,7 @@ macro_rules! test_b_tree_variant {
             fn predecessor_successor() {
                 let mut tree = Tree::new();
                 for value in [10, 20, 30, 40, 50, 60, 70, 80, 90] {
-                    tree.insert(value, ());
+                    tree.insert(value, value);
                 }
 
                 let c30 = tree.cursor(&30).expect("c30");
@@ -252,74 +299,117 @@ macro_rules! test_b_tree_variant {
             fn delete_leaf_and_internal() {
                 let mut tree = Tree::new();
                 for value in [10, 20, 30, 40, 50, 60] {
-                    tree.insert(value, ());
+                    tree.insert(value, value);
                 }
 
                 assert!(tree.remove(&40).is_some());
+                assert_btree_properties(tree.root_view(), tree.degree());
                 assert!(tree.remove(&20).is_some());
+                assert_btree_properties(tree.root_view(), tree.degree());
                 assert!(tree.remove(&200).is_none());
                 assert_btree_properties(tree.root_view(), tree.degree());
             }
 
             #[test]
-            fn larger_delete_sequence() {
+            fn stress_random_operations() {
                 let mut tree = Tree::new();
-                for value in 1..=50 {
-                    tree.insert(value, ());
-                }
-                assert_btree_properties(tree.root_view(), tree.degree());
+                let mut model = BTreeMap::new();
+                let mut rng = StdRng::seed_from_u64(42);
 
-                for value in (1..=50).step_by(3) {
-                    assert!(tree.remove(&value).is_some());
-                    assert_btree_properties(tree.root_view(), tree.degree());
-                }
-
-                for value in 1..=50 {
-                    if value % 3 == 1 {
-                        assert!(!tree.contains_key(&value));
-                    } else {
-                        assert!(tree.contains_key(&value));
+                for _ in 0..1000 {
+                    match rng.gen_range(0..4) {
+                        0 => { // Insert
+                            let k = rng.gen_range(0..500);
+                            let v = rng.gen_range(0..1000);
+                            assert_eq!(tree.insert(k, v), model.insert(k, v));
+                        }
+                        1 if !model.is_empty() => { // Remove
+                            let keys: Vec<_> = model.keys().cloned().collect();
+                            let k = keys[rng.gen_range(0..keys.len())];
+                            assert_eq!(tree.remove(&k), model.remove(&k));
+                        }
+                        2 if !model.is_empty() => { // Search
+                            let keys: Vec<_> = model.keys().cloned().collect();
+                            let k = keys[rng.gen_range(0..keys.len())];
+                            assert!(tree.contains_key(&k));
+                        }
+                        3 => { // Search non-existent
+                            let k = rng.gen_range(500..1000);
+                            assert!(!tree.contains_key(&k));
+                        }
+                        _ => {}
+                    }
+                    if rng.gen_bool(0.05) {
+                        assert_btree_properties(tree.root_view(), tree.degree());
                     }
                 }
+
+                let actual: Vec<_> = (&tree).into_iter().collect();
+                let expected: Vec<_> = model.into_iter().collect();
+                assert_eq!(actual, expected);
             }
 
             #[test]
-            fn mixed_operations_match_btreemap_model() {
-                let mut tree = Tree::new();
-                let mut model = BTreeSet::new();
+            fn complexity_scaling_is_logarithmic() {
+                fn run_case(size: i32) -> usize {
+                    let comparisons = Arc::new(AtomicUsize::new(0));
+                    let mut tree = ComplexityTree::new();
+                    for value in 0..size {
+                        tree.insert(CountedKey::new(value, &comparisons), value);
+                    }
 
-                for key in [18, 7, 25, 3, 11, 20, 30] {
-                    assert_eq!(tree.insert(key, ()).is_some(), !model.insert(key));
-                    assert_btree_properties(tree.root_view(), tree.degree());
+                    comparisons.store(0, AtomicOrdering::Relaxed);
+                    let trials = 100;
+                    let mut rng = StdRng::seed_from_u64(42);
+                    for _ in 0..trials {
+                        let value = rng.gen_range(0..size);
+                        let key = CountedKey::new(value, &comparisons);
+                        assert!(tree.contains_key(&key));
+                    }
+                    comparisons.load(AtomicOrdering::Relaxed) / trials
                 }
 
-                for key in [11, 28, 1] {
-                    assert_eq!(tree.insert(key, ()).is_some(), !model.insert(key));
-                    assert_btree_properties(tree.root_view(), tree.degree());
+                let small = run_case(128);
+                let large = run_case(1024);
+
+                // Average comparisons in B-Tree search is ~ log_t(N) * binary_search_in_node.
+                // For t=2, it's roughly log2(N).
+                // log2(128) = 7, log2(1024) = 10.
+                assert!(large <= small + 8, "average search cost grew too quickly ({} -> {})", small, large);
+            }
+
+            #[test]
+            fn height_scales_logarithmically() {
+                fn run_case(size: i32) -> usize {
+                    let mut tree = Tree::new();
+                    for value in 0..size {
+                        tree.insert(value, value);
+                    }
+                    tree.height()
                 }
 
-                for key in [7, 20, 999] {
-                    assert_eq!(tree.remove(&key).is_some(), model.remove(&key));
-                    assert_btree_properties(tree.root_view(), tree.degree());
-                }
+                let small = run_case(128);
+                let large = run_case(1024);
 
-                let tree_items: Vec<_> = (&tree).into_iter().map(|(k, _)| k).collect();
-                let model_items: Vec<_> = model.into_iter().collect();
-                assert_eq!(tree_items, model_items);
+                // Height of B-Tree is <= log_t((N+1)/2) + 1.
+                // For t=2, log2(64.5) + 1 ~ 7.
+                // For t=3, log3(64.5) + 1 ~ 4.8.
+                assert!(small <= 8, "height at size 128 is too large: {}", small);
+                assert!(large <= 12, "height at size 1024 is too large: {}", large);
             }
         }
     };
 }
 
 #[cfg(test)]
-test_b_tree_variant!(safe_variant_t2, safe::BTree<i32, (), 2>);
+test_b_tree_variant!(safe_variant_t2, safe, 2);
 #[cfg(test)]
-test_b_tree_variant!(safe_variant_t3, safe::BTree<i32, (), 3>);
+test_b_tree_variant!(safe_variant_t3, safe, 3);
 #[cfg(test)]
-test_b_tree_variant!(raw_variant_t2, raw::BTree<i32, (), 2>);
+test_b_tree_variant!(raw_variant_t2, raw, 2);
 #[cfg(test)]
-test_b_tree_variant!(raw_variant_t3, raw::BTree<i32, (), 3>);
+test_b_tree_variant!(raw_variant_t3, raw, 3);
 #[cfg(test)]
-test_b_tree_variant!(arena_variant_t2, arena::BTree<i32, (), 2>);
+test_b_tree_variant!(arena_variant_t2, arena, 2);
 #[cfg(test)]
-test_b_tree_variant!(arena_variant_t3, arena::BTree<i32, (), 3>);
+test_b_tree_variant!(arena_variant_t3, arena, 3);

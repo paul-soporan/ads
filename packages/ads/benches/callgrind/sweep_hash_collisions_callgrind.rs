@@ -12,8 +12,8 @@ library_benchmark_group!(
     benchmarks =
         callgrind_sweep_hash_collisions_insert_std_hashmap,
         callgrind_sweep_hash_collisions_insert_hashmap_zero_hasher,
-        callgrind_sweep_hash_collisions_contains_temporal_hashmap_zero_hasher,
-        callgrind_sweep_hash_collisions_contains_temporal_std_btreemap_reference
+        callgrind_sweep_hash_collisions_contains_hashmap_zero_hasher,
+        callgrind_sweep_hash_collisions_contains_std_btreemap_reference
 );
 
 main!(library_benchmark_groups = sweep_hash_collisions_callgrind_group);

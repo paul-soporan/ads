@@ -21,6 +21,7 @@ const MEMORY_BENCHES: &[&str] = &[
     "micro_maps_dhat",
     "micro_sequences_dhat",
     "micro_heaps_dhat",
+    "micro_dsu_dhat",
     "macro_read_heavy_dhat",
     "macro_write_heavy_dhat",
     "macro_thrashing_dhat",
@@ -33,6 +34,7 @@ const CRITERION_BENCHES: &[&str] = &[
     "micro_maps_large_payload_criterion",
     "micro_sequences_criterion",
     "micro_heaps_criterion",
+    "micro_dsu_criterion",
     "macro_read_heavy_criterion",
     "macro_write_heavy_criterion",
     "macro_thrashing_criterion",
@@ -52,6 +54,7 @@ pub enum BenchFamilyGroup {
     Micro,
     Macro,
     Sweeps,
+    Motivational,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,16 +97,24 @@ const BENCH_SPECS: &[BenchSpec] = &[
         kind: BenchKind::Criterion,
         family: BenchFamilyGroup::Micro,
         subcategory: "micro_sequences",
-        criterion_groups: &["micro_sequences"],
-        workload_tags: &["micro_sequences"],
+        criterion_groups: &["micro_sequences_u64", "micro_sequences_indexing_u64"],
+        workload_tags: &["micro_sequences_u64", "micro_sequences_indexing_u64"],
     },
     BenchSpec {
         target: "micro_heaps_criterion",
         kind: BenchKind::Criterion,
         family: BenchFamilyGroup::Micro,
         subcategory: "micro_heaps",
-        criterion_groups: &["micro_heaps_u64"],
-        workload_tags: &["micro_heaps_u64"],
+        criterion_groups: &["micro_heaps_u64", "motivational_heap_merge_u64"],
+        workload_tags: &["micro_heaps_u64", "motivational_heap_merge_u64"],
+    },
+    BenchSpec {
+        target: "micro_dsu_criterion",
+        kind: BenchKind::Criterion,
+        family: BenchFamilyGroup::Micro,
+        subcategory: "micro_dsu",
+        criterion_groups: &["micro_dsu_u64", "motivational_dsu_connectivity_u64"],
+        workload_tags: &["micro_dsu_u64", "motivational_dsu_connectivity_u64"],
     },
     BenchSpec {
         target: "macro_read_heavy_criterion",
@@ -163,7 +174,7 @@ const BENCH_SPECS: &[BenchSpec] = &[
         family: BenchFamilyGroup::Micro,
         subcategory: "micro_sequences",
         criterion_groups: &[],
-        workload_tags: &["micro_sequences"],
+        workload_tags: &["micro_sequences_u64"],
     },
     BenchSpec {
         target: "micro_heaps_dhat",
@@ -172,6 +183,14 @@ const BENCH_SPECS: &[BenchSpec] = &[
         subcategory: "micro_heaps",
         criterion_groups: &[],
         workload_tags: &["micro_heaps_u64"],
+    },
+    BenchSpec {
+        target: "micro_dsu_dhat",
+        kind: BenchKind::Dhat,
+        family: BenchFamilyGroup::Micro,
+        subcategory: "micro_dsu",
+        criterion_groups: &[],
+        workload_tags: &["micro_dsu_u64"],
     },
     BenchSpec {
         target: "macro_read_heavy_dhat",
@@ -231,7 +250,7 @@ const BENCH_SPECS: &[BenchSpec] = &[
         family: BenchFamilyGroup::Micro,
         subcategory: "micro_sequences",
         criterion_groups: &[],
-        workload_tags: &["micro_sequences"],
+        workload_tags: &["micro_sequences_u64", "micro_sequences_indexing_u64"],
     },
     BenchSpec {
         target: "micro_heaps_callgrind",
@@ -239,7 +258,15 @@ const BENCH_SPECS: &[BenchSpec] = &[
         family: BenchFamilyGroup::Micro,
         subcategory: "micro_heaps",
         criterion_groups: &[],
-        workload_tags: &["micro_heaps_u64"],
+        workload_tags: &["micro_heaps_u64", "motivational_heap_merge_u64"],
+    },
+    BenchSpec {
+        target: "micro_dsu_callgrind",
+        kind: BenchKind::Callgrind,
+        family: BenchFamilyGroup::Micro,
+        subcategory: "micro_dsu",
+        criterion_groups: &[],
+        workload_tags: &["micro_dsu_u64", "motivational_dsu_connectivity_u64"],
     },
     BenchSpec {
         target: "macro_read_heavy_callgrind",
@@ -478,12 +505,34 @@ fn family_matches(spec: &BenchSpec, families: &[BenchFamily]) -> bool {
     }
 
     families.iter().any(|family| {
-        matches!(
+        let direct_match = matches!(
             (family, spec.family),
             (BenchFamily::Micro, BenchFamilyGroup::Micro)
                 | (BenchFamily::Macro, BenchFamilyGroup::Macro)
                 | (BenchFamily::Sweeps, BenchFamilyGroup::Sweeps)
-        )
+                | (BenchFamily::Motivational, BenchFamilyGroup::Motivational)
+        );
+
+        if direct_match {
+            return true;
+        }
+
+        // Special case: motivational benches can be triggered by either micro or motivational family
+        if family == &BenchFamily::Micro && spec.family == BenchFamilyGroup::Motivational {
+            return true;
+        }
+
+        // Special case: a micro target can contain motivational groups
+        if family == &BenchFamily::Motivational
+            && spec
+                .workload_tags
+                .iter()
+                .any(|tag| tag.starts_with("motivational_"))
+        {
+            return true;
+        }
+
+        false
     })
 }
 
@@ -496,6 +545,7 @@ fn suite_matches(spec: &BenchSpec, suites: &[Suite]) -> bool {
         matches!(
             (suite, spec.family, spec.kind),
             (Suite::Micro, BenchFamilyGroup::Micro, _)
+                | (Suite::Micro, BenchFamilyGroup::Motivational, _)
                 | (Suite::Macro, BenchFamilyGroup::Macro, _)
                 | (Suite::Sweeps, BenchFamilyGroup::Sweeps, _)
                 | (Suite::Memory, _, BenchKind::Dhat)
@@ -617,6 +667,10 @@ pub fn run_benches(benches: &[BenchInvocation], options: &BenchRunOptions<'_>) -
     let source_stamp_ns = compute_ads_source_stamp_ns(options.workspace_root)?;
     let selected = select_benches_for_run(benches, options, source_stamp_ns)?;
 
+    if !options.incremental {
+        cleanup_profile_artifacts_for_selected(options.target_dir, &selected)?;
+    }
+
     if selected.is_empty() {
         println!(
             "{}",
@@ -736,6 +790,88 @@ pub fn run_benches(benches: &[BenchInvocation], options: &BenchRunOptions<'_>) -
         summary.push_str(&format!("  - {}: {}\n", failure.bench, failure.error));
     }
     bail!("{}", summary.trim_end());
+}
+
+fn cleanup_profile_artifacts_for_selected(
+    target_dir: &Path,
+    selected: &[BenchInvocation],
+) -> Result<()> {
+    let mut should_clean_criterion = false;
+    let mut should_clean_callgrind = false;
+    let mut should_clean_dhat = false;
+
+    for bench in selected {
+        let Some(spec) = BENCH_SPECS.iter().find(|spec| spec.target == bench.target) else {
+            continue;
+        };
+
+        match spec.kind {
+            BenchKind::Criterion => should_clean_criterion = true,
+            BenchKind::Callgrind => should_clean_callgrind = true,
+            BenchKind::Dhat => should_clean_dhat = true,
+        }
+    }
+
+    if should_clean_criterion {
+        let criterion_dir = target_dir.join("criterion");
+        if criterion_dir.exists() {
+            fs::remove_dir_all(&criterion_dir).with_context(|| {
+                format!(
+                    "failed to clean stale criterion artifacts at {}",
+                    criterion_dir.display()
+                )
+            })?;
+        }
+    }
+
+    if should_clean_dhat {
+        let dhat_dir = target_dir.join("dhat");
+        if dhat_dir.exists() {
+            for entry in WalkDir::new(&dhat_dir).into_iter().filter_map(Result::ok) {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+
+                let path = entry.path();
+                let is_dhat_json = path.extension().and_then(|x| x.to_str()) == Some("json")
+                    && path
+                        .file_name()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|name| name.starts_with("dhat__"));
+                if is_dhat_json {
+                    fs::remove_file(path).with_context(|| {
+                        format!("failed to remove stale dhat artifact {}", path.display())
+                    })?;
+                }
+            }
+        }
+    }
+
+    if should_clean_callgrind && target_dir.exists() {
+        for entry in WalkDir::new(target_dir).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let Some(name) = entry.file_name().to_str() else {
+                continue;
+            };
+            let is_callgrind_file = name.starts_with("callgrind.out")
+                || (name.starts_with("callgrind.")
+                    && (name.ends_with(".out") || name.contains(".out.#")));
+            if is_callgrind_file {
+                let path = entry.path();
+                fs::remove_file(path).with_context(|| {
+                    format!(
+                        "failed to remove stale callgrind artifact {}",
+                        path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn initialize_progress(

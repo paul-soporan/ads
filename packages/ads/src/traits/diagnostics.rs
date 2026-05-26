@@ -29,3 +29,8 @@ pub trait DisjointSetDiagnostics {
     fn max_rank(&self) -> usize;
     fn root_value(&self, set_id: Self::SetId) -> Option<Self::Value>;
 }
+
+#[cfg(any(test, feature = "bench"))]
+pub trait SequenceDiagnostics {
+    fn walk_steps(&self) -> usize;
+}

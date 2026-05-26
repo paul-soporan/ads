@@ -49,7 +49,7 @@ pub struct BenchArgs {
     /// Filter by payload token (e.g. u64, string, large_payload)
     #[arg(long)]
     pub payload: Option<String>,
-    /// Filter by operation token (e.g. insert, contains_zipf, mix)
+    /// Filter by operation token (e.g. insert, contains, mix)
     #[arg(long = "op")]
     pub operation: Option<String>,
     /// Filter by implementation token (e.g. avl_arena)
@@ -134,7 +134,7 @@ pub struct CiArgs {
     /// Filter by payload token (e.g. u64, string, large_payload)
     #[arg(long)]
     pub payload: Option<String>,
-    /// Filter by operation token (e.g. insert, contains_zipf, mix)
+    /// Filter by operation token (e.g. insert, contains, mix)
     #[arg(long = "op")]
     pub operation: Option<String>,
     /// Filter by implementation token (e.g. avl_arena)
@@ -186,4 +186,5 @@ pub enum BenchFamily {
     Micro,
     Macro,
     Sweeps,
+    Motivational,
 }

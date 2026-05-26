@@ -2,8 +2,15 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::traits::core::{Sequence, SequenceMutGuard};
+use crate::traits::core::{Sequence, SequenceMutGuard, SequenceCursor};
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics;
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics as SequenceDiagnosticsTrait;
 
 type Link<T> = Option<Rc<RefCell<Node<T>>>>;
 type WeakLink<T> = Option<Weak<RefCell<Node<T>>>>;
@@ -19,6 +26,8 @@ pub struct SinglyLinkedList<T> {
     head: Link<T>,
     tail: WeakLink<T>,
     len: usize,
+    #[cfg(any(test, feature = "bench"))]
+    walk_steps: AtomicUsize,
 }
 
 impl<T> Default for SinglyLinkedList<T> {
@@ -27,15 +36,24 @@ impl<T> Default for SinglyLinkedList<T> {
             head: None,
             tail: None,
             len: 0,
+            #[cfg(any(test, feature = "bench"))]
+            walk_steps: AtomicUsize::new(0),
         }
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct SinglyCursor<'a, T> {
     index: usize,
     list: &'a SinglyLinkedList<T>,
 }
+
+impl<'a, T> Clone for SinglyCursor<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> Copy for SinglyCursor<'a, T> {}
 
 pub struct CursorValue<T>(T);
 
@@ -58,6 +76,12 @@ impl<T> SequenceMutGuard<T> for SinglyMutView<T> {
     {
         let mut node = self.node.borrow_mut();
         f(&mut node.value)
+    }
+}
+
+impl<'a, T> SequenceCursor for SinglyCursor<'a, T> {
+    fn index(&self) -> usize {
+        self.index
     }
 }
 
@@ -94,6 +118,8 @@ impl<T> SinglyLinkedList<T> {
 
         let mut current = self.head.as_ref()?.clone();
         for _ in 0..index {
+            #[cfg(any(test, feature = "bench"))]
+            self.walk_steps.fetch_add(1, Ordering::Relaxed);
             let next = current.borrow().next.as_ref()?.clone();
             current = next;
         }
@@ -199,6 +225,8 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
                 let mut current = self.head.as_ref()?.clone();
 
                 loop {
+                    #[cfg(any(test, feature = "bench"))]
+                    self.walk_steps.fetch_add(1, Ordering::Relaxed);
                     let next = current
                         .borrow()
                         .next
@@ -247,6 +275,13 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
 
     fn len(&self) -> usize {
         self.len
+    }
+}
+
+#[cfg(any(test, feature = "bench"))]
+impl<T> SequenceDiagnostics for SinglyLinkedList<T> {
+    fn walk_steps(&self) -> usize {
+        self.walk_steps.load(Ordering::Relaxed)
     }
 }
 

@@ -1,6 +1,6 @@
 # ADS Core Library
 
-The `ads` (Algorithms and Data Structures) package is the heart of the project. It contains highly optimized implementations of various data structures, each provided in three distinct memory management variants to allow for rigorous performance and safety analysis.
+The `ads` package is the heart of the project. It contains highly optimized implementations of various data structures, each provided in three distinct memory management variants to allow for rigorous performance and safety analysis.
 
 ## 🏗️ Data Structure Categories
 

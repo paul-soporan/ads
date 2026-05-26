@@ -12,11 +12,17 @@ struct Handle {
     generation: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Forward {
+    next: Option<Handle>,
+    span: usize,
+}
+
 #[derive(Debug)]
 struct Node<K, V> {
     key: Option<K>,
     value: Option<V>,
-    forwards: Vec<Option<Handle>>,
+    forwards: Vec<Forward>,
 }
 
 impl<K, V> Node<K, V> {
@@ -24,7 +30,7 @@ impl<K, V> Node<K, V> {
         Self {
             key: None,
             value: None,
-            forwards: vec![None; max_level],
+            forwards: vec![Forward { next: None, span: 1 }; max_level],
         }
     }
 
@@ -32,7 +38,7 @@ impl<K, V> Node<K, V> {
         Self {
             key: Some(key),
             value: Some(value),
-            forwards: vec![None; level],
+            forwards: vec![Forward { next: None, span: 0 }; level],
         }
     }
 
@@ -247,13 +253,20 @@ impl<K, V> SkipList<K, V> {
 
     fn forward(&self, handle: Handle, level: usize) -> Option<Handle> {
         self.get_node(handle)
-            .and_then(|node| node.forwards.get(level).copied().flatten())
+            .and_then(|node| node.forwards.get(level).and_then(|f| f.next))
     }
 
-    fn set_forward(&mut self, handle: Handle, level: usize, target: Option<Handle>) {
+    fn span(&self, handle: Handle, level: usize) -> usize {
+        self.get_node(handle)
+            .and_then(|node| node.forwards.get(level).map(|f| f.span))
+            .unwrap_or(0)
+    }
+
+    fn set_forward(&mut self, handle: Handle, level: usize, target: Option<Handle>, span: usize) {
         if let Some(node) = self.get_node_mut(handle) {
-            if let Some(slot) = node.forwards.get_mut(level) {
-                *slot = target;
+            if let Some(f) = node.forwards.get_mut(level) {
+                f.next = target;
+                f.span = span;
             }
         }
     }
@@ -263,11 +276,23 @@ impl<K, V> SkipList<K, V> {
             return None;
         }
 
-        let mut current = self.forward(self.head, 0);
-        for _ in 0..index {
-            current = self.forward(current?, 0);
+        let mut current = self.head;
+        let mut pos = 0usize;
+        let target = index + 1;
+
+        for level in (0..self.level).rev() {
+            while let Some(next) = self.forward(current, level) {
+                let span = self.span(current, level);
+                if pos + span <= target {
+                    pos += span;
+                    current = next;
+                } else {
+                    break;
+                }
+            }
         }
-        current
+
+        if pos == target { Some(current) } else { None }
     }
 
     pub fn cursor_at(&self, index: usize) -> Option<SkipCursor<'_, K, V>> {
@@ -287,8 +312,9 @@ impl<K, V> SkipList<K, V> {
         }
 
         if let Some(head) = self.get_node_mut(self.head) {
-            for pointer in &mut head.forwards {
-                *pointer = None;
+            for f in &mut head.forwards {
+                f.next = None;
+                f.span = 1;
             }
         }
 
@@ -303,96 +329,42 @@ impl<K, V> SkipList<K, V> {
         }
     }
 
-    fn find_update_path(&self, key: &K, update: &mut [Handle])
+    fn find_update_path(&self, key: &K, update: &mut [Handle], rank: &mut [usize]) -> Option<usize>
     where
         K: Ord,
     {
         let mut current = self.head;
+        let mut current_rank = 0usize;
+        let mut found_rank = None;
 
-        for level in (0..self.level).rev() {
-            loop {
-                let Some(next) = self.forward(current, level) else {
+        for level in (0..self.max_level).rev() {
+            if level < self.level {
+                loop {
+                    let Some(next) = self.forward(current, level) else {
+                        break;
+                    };
+
+                    let ord = self
+                        .get_node(next)
+                        .and_then(|node| node.key.as_ref())
+                        .expect("non-head node should have key")
+                        .cmp(key);
+
+                    if ord == Ordering::Less {
+                        current_rank += self.span(current, level);
+                        current = next;
+                        continue;
+                    } else if ord == Ordering::Equal {
+                        found_rank = Some(current_rank + self.span(current, level));
+                    }
+
                     break;
-                };
-
-                let ord = self
-                    .get_node(next)
-                    .and_then(|node| node.key.as_ref())
-                    .expect("non-head node should have key")
-                    .cmp(key);
-
-                if ord == Ordering::Less {
-                    current = next;
-                    continue;
                 }
-
-                break;
             }
-
             update[level] = current;
+            rank[level] = current_rank;
         }
-    }
-
-    fn search_node(&self, key: &K) -> Option<Handle>
-    where
-        K: Ord,
-    {
-        let mut current = self.head;
-
-        for level in (0..self.level).rev() {
-            loop {
-                let Some(next) = self.forward(current, level) else {
-                    break;
-                };
-
-                let ord = self
-                    .get_node(next)
-                    .and_then(|node| node.key.as_ref())
-                    .expect("non-head node should have key")
-                    .cmp(key);
-
-                match ord {
-                    Ordering::Less => current = next,
-                    Ordering::Equal => return Some(next),
-                    Ordering::Greater => break,
-                }
-            }
-        }
-
-        let candidate = self.forward(current, 0)?;
-        let is_match = self
-            .get_node(candidate)
-            .and_then(|node| node.key.as_ref())
-            .is_some_and(|candidate_key| candidate_key == key);
-
-        is_match.then_some(candidate)
-    }
-
-    fn index_of_key(&self, key: &K) -> Option<usize>
-    where
-        K: Ord,
-    {
-        let mut current = self.forward(self.head, 0);
-        let mut index = 0usize;
-
-        while let Some(handle) = current {
-            let ord = self
-                .get_node(handle)
-                .and_then(|node| node.key.as_ref())
-                .expect("non-head node should have key")
-                .cmp(key);
-
-            match ord {
-                Ordering::Less => {
-                    index += 1;
-                    current = self.forward(handle, 0);
-                }
-                Ordering::Equal => return Some(index),
-                Ordering::Greater => return None,
-            }
-        }
-
-        None
+        found_rank
     }
 }
 
@@ -413,7 +385,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         let handle = self.next?;
         let node = self.list.get_node(handle)?;
-        self.next = node.forwards[0];
+        self.next = node.forwards[0].next;
         Some((
             node.key.as_ref().expect("iterator node should have key"),
             node.value
@@ -436,40 +408,43 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut update = vec![self.head; self.max_level];
-        self.find_update_path(&key, &mut update);
-
-        if let Some(candidate) = self.forward(update[0], 0) {
-            let is_equal = self
-                .get_node(candidate)
-                .and_then(|node| node.key.as_ref())
-                .is_some_and(|candidate_key| candidate_key == &key);
-
-            if is_equal {
-                let node = self
-                    .get_node_mut(candidate)
-                    .expect("candidate should remain live during insertion");
-                return Some(
-                    node.value
-                        .replace(value)
-                        .expect("non-head node should have value"),
-                );
-            }
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(&key, &mut update, &mut rank).is_some() {
+            let candidate = self.forward(update[0], 0).unwrap();
+            let node = self
+                .get_node_mut(candidate)
+                .expect("candidate should remain live during insertion");
+            return Some(
+                node.value
+                    .replace(value)
+                    .expect("non-head node should have value"),
+            );
         }
 
         let new_level = self.random_level();
         if new_level > self.level {
-            for slot in update.iter_mut().take(new_level).skip(self.level) {
-                *slot = self.head;
+            for i in self.level..new_level {
+                rank[i] = 0;
+                update[i] = self.head;
+                let old_len = self.len;
+                self.set_forward(update[i], i, None, old_len + 1);
             }
             self.level = new_level;
         }
 
         let new_handle = self.alloc_node(Node::new(key, value, new_level));
 
-        for (level, predecessor) in update.iter().enumerate().take(new_level) {
-            let next = self.forward(*predecessor, level);
-            self.set_forward(new_handle, level, next);
-            self.set_forward(*predecessor, level, Some(new_handle));
+        for level in 0..new_level {
+            let next = self.forward(update[level], level);
+            let old_span = self.span(update[level], level);
+
+            self.set_forward(new_handle, level, next, old_span - (rank[0] - rank[level]));
+            self.set_forward(update[level], level, Some(new_handle), (rank[0] - rank[level]) + 1);
+        }
+
+        for level in new_level..self.level {
+            let span = self.span(update[level], level);
+            self.set_forward(update[level], level, self.forward(update[level], level), span + 1);
         }
 
         self.len += 1;
@@ -477,10 +452,12 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
     }
 
     fn cursor<'a>(&'a self, key: &K) -> Option<Self::Cursor<'a>> {
-        let handle = self.search_node(key)?;
-        let index = self.index_of_key(key)?;
+        let mut update = vec![self.head; self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        let found_rank = self.find_update_path(key, &mut update, &mut rank)?;
+        let handle = self.forward(update[0], 0)?;
         Some(SkipCursor {
-            index,
+            index: found_rank - 1,
             handle,
             list: self,
         })
@@ -492,30 +469,27 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn remove(&mut self, key: &K) -> Option<V> {
         let mut update = vec![self.head; self.max_level];
-        self.find_update_path(key, &mut update);
-
-        let target = self.forward(update[0], 0)?;
-        let is_match = self
-            .get_node(target)
-            .and_then(|node| node.key.as_ref())
-            .is_some_and(|candidate_key| candidate_key == key);
-
-        if !is_match {
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(key, &mut update, &mut rank).is_none() {
             return None;
         }
 
+        let target = self.forward(update[0], 0).unwrap();
         let target_level = self
             .get_node(target)
             .expect("target should remain live during removal")
             .level();
 
-        for (level, predecessor) in update.iter().enumerate().take(target_level) {
-            let points_to_target = self
-                .forward(*predecessor, level)
-                .is_some_and(|h| h == target);
-            if points_to_target {
-                let successor = self.forward(target, level);
-                self.set_forward(*predecessor, level, successor);
+        for level in 0..self.level {
+            let predecessor = update[level];
+            if level < target_level && self.forward(predecessor, level).is_some_and(|h| h == target) {
+                let target_span = self.span(target, level);
+                let pred_span = self.span(predecessor, level);
+                let next = self.forward(target, level);
+                self.set_forward(predecessor, level, next, pred_span + target_span - 1);
+            } else {
+                let span = self.span(predecessor, level);
+                self.set_forward(predecessor, level, self.forward(predecessor, level), span - 1);
             }
         }
 
@@ -531,11 +505,13 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.search_node(key).is_some()
+        let mut update = vec![self.head; self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        self.find_update_path(key, &mut update, &mut rank).is_some()
     }
 
     fn clear(&mut self) {
-        Self::clear(self)
+        self.clear()
     }
 
     fn len(&self) -> usize {

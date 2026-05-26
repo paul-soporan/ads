@@ -1,5 +1,6 @@
 use std::{
     cell::{Ref, RefCell},
+    collections::HashMap,
     rc::Rc,
 };
 
@@ -80,18 +81,22 @@ impl<T> DisjointSetView<T> {
     }
 
     pub fn is_root(&self) -> bool {
-        self.parent_id().is_none()
+        self.node.borrow().parent.is_none()
     }
 }
 
 #[derive(Debug)]
 pub struct DisjointSet<T> {
     nodes: Vec<Rc<RefCell<DisjointSetNode<T>>>>,
+    value_map: HashMap<T, usize>,
 }
 
 impl<T> DisjointSet<T> {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            value_map: HashMap::new(),
+        }
     }
 
     fn node_at_slot(&self, slot: usize) -> Option<Rc<RefCell<DisjointSetNode<T>>>> {
@@ -108,12 +113,10 @@ impl<T> DisjointSet<T> {
 
     fn node_by_value(&self, value: &T) -> Option<Rc<RefCell<DisjointSetNode<T>>>>
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq,
     {
-        self.nodes
-            .iter()
-            .find(|node| node.borrow().value == *value)
-            .cloned()
+        let &idx = self.value_map.get(value)?;
+        self.nodes.get(idx).cloned()
     }
 
     fn find_root_with_compression(
@@ -158,21 +161,23 @@ impl<T> DisjointSet<T> {
 
     pub fn make_set(&mut self, value: T) -> SetId
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq + Clone,
     {
         if let Some(existing) = self.node_by_value(&value) {
             return self.find_root_with_compression(existing).borrow().id;
         }
 
-        let id = SetId(self.nodes.len());
-        let node = Rc::new(RefCell::new(DisjointSetNode::new(id, value)));
+        let idx = self.nodes.len();
+        let id = SetId(idx);
+        let node = Rc::new(RefCell::new(DisjointSetNode::new(id, value.clone())));
         self.nodes.push(node);
+        self.value_map.insert(value, idx);
         id
     }
 
     pub fn find(&mut self, value: &T) -> Option<SetId>
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq,
     {
         let node = self.node_by_value(value)?;
         Some(self.find_root_with_compression(node).borrow().id)
@@ -180,7 +185,7 @@ impl<T> DisjointSet<T> {
 
     pub fn view(&self, value: &T) -> Option<DisjointSetView<T>>
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq,
     {
         self.node_by_value(value)
             .map(|node| DisjointSetView { node })
@@ -193,48 +198,48 @@ impl<T> DisjointSet<T> {
 
     pub fn union(&mut self, left: &T, right: &T) -> bool
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq,
     {
-        let Some(left_node) = self.node_by_value(left) else {
-            return false;
-        };
-        let Some(right_node) = self.node_by_value(right) else {
-            return false;
-        };
+        let left_node = self.node_by_value(left);
+        let right_node = self.node_by_value(right);
 
-        let root_left = self.find_root_with_compression(left_node);
-        let root_right = self.find_root_with_compression(right_node);
+        match (left_node, right_node) {
+            (Some(l), Some(r)) => {
+                let root_left = self.find_root_with_compression(l);
+                let root_right = self.find_root_with_compression(r);
 
-        if Rc::ptr_eq(&root_left, &root_right) {
-            return false;
+                if Rc::ptr_eq(&root_left, &root_right) {
+                    return false;
+                }
+
+                let mut left_mut = root_left.borrow_mut();
+                let mut right_mut = root_right.borrow_mut();
+
+                if left_mut.rank < right_mut.rank {
+                    left_mut.parent = Some(root_right.clone());
+                } else if left_mut.rank > right_mut.rank {
+                    right_mut.parent = Some(root_left.clone());
+                } else {
+                    right_mut.parent = Some(root_left.clone());
+                    left_mut.rank += 1;
+                }
+
+                true
+            }
+            _ => false,
         }
-
-        let mut left_mut = root_left.borrow_mut();
-        let mut right_mut = root_right.borrow_mut();
-
-        if left_mut.rank < right_mut.rank {
-            left_mut.parent = Some(root_right.clone());
-        } else if left_mut.rank > right_mut.rank {
-            right_mut.parent = Some(root_left.clone());
-        } else {
-            right_mut.parent = Some(root_left.clone());
-            left_mut.rank += 1;
-        }
-
-        true
     }
 
     pub fn same_set(&mut self, left: &T, right: &T) -> bool
     where
-        T: PartialEq,
+        T: std::hash::Hash + Eq,
     {
-        let Some(root_left) = self.find(left) else {
-            return false;
-        };
-        let Some(root_right) = self.find(right) else {
-            return false;
-        };
-        root_left == root_right
+        let root_left = self.find(left);
+        let root_right = self.find(right);
+        match (root_left, root_right) {
+            (Some(l), Some(r)) => l == r,
+            _ => false,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -247,47 +252,46 @@ impl<T> DisjointSet<T> {
 
     pub fn clear(&mut self) {
         self.nodes.clear();
+        self.value_map.clear();
     }
 
     pub fn components(&self) -> Vec<(SetId, Vec<T>)>
     where
         T: Clone,
     {
-        let mut groups: Vec<(SetId, Vec<T>)> = Vec::new();
+        let mut groups: HashMap<SetId, Vec<T>> = HashMap::new();
 
         for node in &self.nodes {
-            let (root_id, value) = {
-                let b = node.borrow();
-                let root_id = self.find_root_without_compression(node.clone()).borrow().id;
-                (root_id, b.value.clone())
-            };
-
-            if let Some(existing) = groups
-                .iter_mut()
-                .find(|(group_root, _)| *group_root == root_id)
-            {
-                existing.1.push(value);
-            } else {
-                groups.push((root_id, vec![value]));
-            }
+            let root_id = self.find_root_without_compression(node.clone()).borrow().id;
+            groups
+                .entry(root_id)
+                .or_default()
+                .push(node.borrow().value.clone());
         }
 
-        groups
+        groups.into_iter().collect()
     }
 
     pub fn component_views(&self) -> Vec<(DisjointSetView<T>, Vec<DisjointSetView<T>>)>
     where
-        T: Clone + PartialEq,
+        T: Clone + std::hash::Hash + Eq,
     {
-        self.components()
+        let mut groups: HashMap<SetId, Vec<DisjointSetView<T>>> = HashMap::new();
+
+        for node in &self.nodes {
+            let root_node = self.find_root_without_compression(node.clone());
+            let root_id = root_node.borrow().id;
+            groups
+                .entry(root_id)
+                .or_default()
+                .push(DisjointSetView { node: node.clone() });
+        }
+
+        groups
             .into_iter()
-            .filter_map(|(root, members)| {
-                let root_view = self.view_by_set_id(root)?;
-                let member_views: Vec<_> = members
-                    .into_iter()
-                    .filter_map(|member_value| self.view(&member_value))
-                    .collect();
-                Some((root_view, member_views))
+            .map(|(root_id, members)| {
+                let root_view = self.view_by_set_id(root_id).unwrap();
+                (root_view, members)
             })
             .collect()
     }
@@ -296,7 +300,11 @@ impl<T> DisjointSet<T> {
     where
         T: Clone,
     {
-        self.components().len()
+        let mut roots = std::collections::HashSet::new();
+        for node in &self.nodes {
+            roots.insert(self.find_root_without_compression(node.clone()).borrow().id);
+        }
+        roots.len()
     }
 
     pub fn max_rank(&self) -> usize {
@@ -316,8 +324,8 @@ impl<T> DisjointSet<T> {
     }
 }
 
-impl<T: PartialEq> core_traits::DisjointSet<T> for DisjointSet<T> {
-    type SetId = crate::contiguous::disjoint_set::safe::SetId;
+impl<T: std::hash::Hash + Eq + Clone> core_traits::DisjointSet<T> for DisjointSet<T> {
+    type SetId = SetId;
 
     type View<'a>
         = DisjointSetView<T>
@@ -353,8 +361,8 @@ impl<T: PartialEq> core_traits::DisjointSet<T> for DisjointSet<T> {
     }
 }
 
-impl<T: Clone> DisjointSetDiagnostics for DisjointSet<T> {
-    type SetId = crate::contiguous::disjoint_set::safe::SetId;
+impl<T: Clone + std::hash::Hash + Eq> DisjointSetDiagnostics for DisjointSet<T> {
+    type SetId = SetId;
     type Value = T;
 
     fn element_count(&self) -> usize {

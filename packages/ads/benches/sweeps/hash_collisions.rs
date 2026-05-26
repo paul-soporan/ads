@@ -54,12 +54,12 @@ fn hash_collision_sweeps(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("contains_temporal/hashmap_zero_hasher", size),
+            BenchmarkId::new("contains/hashmap_zero_hasher", size),
             &queries,
             |b, input| b.iter(|| colliding_contains(&keys, input)),
         );
         group.bench_with_input(
-            BenchmarkId::new("contains_temporal/std_btreemap_reference", size),
+            BenchmarkId::new("contains/std_btreemap_reference", size),
             &queries,
             |b, input| b.iter(|| common::map_contains_bench::<BTreeMap<u64, u64>>(&keys, input)),
         );

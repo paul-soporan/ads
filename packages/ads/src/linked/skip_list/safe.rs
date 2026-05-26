@@ -13,26 +13,49 @@ const DEFAULT_DENOMINATOR: u32 = 2;
 type Link<K, V> = Option<Rc<RefCell<Node<K, V>>>>;
 
 #[derive(Debug)]
+struct Forward<K, V> {
+    next: Link<K, V>,
+    span: usize,
+}
+
+impl<K, V> Clone for Forward<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            next: self.next.clone(),
+            span: self.span,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Node<K, V> {
     key: Option<K>,
     value: Option<V>,
-    forwards: Vec<Link<K, V>>,
+    forwards: Vec<Forward<K, V>>,
 }
 
 impl<K, V> Node<K, V> {
     fn head(max_level: usize) -> Self {
+        let mut forwards = Vec::with_capacity(max_level);
+        for _ in 0..max_level {
+            forwards.push(Forward { next: None, span: 1 });
+        }
         Self {
             key: None,
             value: None,
-            forwards: vec![None; max_level],
+            forwards,
         }
     }
 
     fn new(key: K, value: V, level: usize) -> Self {
+        let mut forwards = Vec::with_capacity(level);
+        for _ in 0..level {
+            forwards.push(Forward { next: None, span: 0 });
+        }
         Self {
             key: Some(key),
             value: Some(value),
-            forwards: vec![None; level],
+            forwards,
         }
     }
 
@@ -220,12 +243,33 @@ impl<K, V> SkipList<K, V> {
             return None;
         }
 
-        let mut current = self.head.borrow().forwards[0].clone();
-        for _ in 0..index {
-            current = current?.borrow().forwards[0].clone();
+        let mut current = self.head.clone();
+        let mut pos = 0usize;
+        let target = index + 1;
+
+        for level in (0..self.level).rev() {
+            loop {
+                let (next, span) = {
+                    let b = current.borrow();
+                    let f = &b.forwards[level];
+                    (f.next.clone(), f.span)
+                };
+                if let Some(n) = next
+                    && pos + span <= target
+                {
+                    pos += span;
+                    current = n;
+                } else {
+                    break;
+                }
+            }
         }
 
-        current
+        if pos == target {
+            Some(current)
+        } else {
+            None
+        }
     }
 
     pub fn cursor_at(&self, index: usize) -> Option<SkipCursor<'_, K, V>> {
@@ -239,116 +283,59 @@ impl<K, V> SkipList<K, V> {
 
     pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
-            next: self.head.borrow().forwards[0].clone(),
+            next: self.head.borrow().forwards[0].next.clone(),
             marker: PhantomData,
         }
     }
 
-    fn find_update_path(&self, key: &K, update: &mut [Rc<RefCell<Node<K, V>>>])
-    where
+    fn find_update_path(
+        &self,
+        key: &K,
+        update: &mut [Rc<RefCell<Node<K, V>>>],
+        rank: &mut [usize],
+    ) -> Option<usize> where
         K: Ord,
     {
         let mut current = self.head.clone();
+        let mut current_rank = 0usize;
+        let mut found_rank = None;
 
-        for level in (0..self.level).rev() {
-            loop {
-                let next = current.borrow().forwards[level].clone();
-                let Some(next_node) = next else {
+        for level in (0..self.max_level).rev() {
+            if level < self.level {
+                loop {
+                    let (next, span) = {
+                        let b = current.borrow();
+                        let f = &b.forwards[level];
+                        (f.next.clone(), f.span)
+                    };
+                    let Some(next_node) = next else {
+                        break;
+                    };
+
+                    let ord = {
+                        let borrowed = next_node.borrow();
+                        borrowed
+                            .key
+                            .as_ref()
+                            .expect("non-head node should have key")
+                            .cmp(key)
+                    };
+
+                    if ord == Ordering::Less {
+                        current_rank += span;
+                        current = next_node;
+                        continue;
+                    } else if ord == Ordering::Equal {
+                        found_rank = Some(current_rank + span);
+                    }
+
                     break;
-                };
-
-                let ord = {
-                    let borrowed = next_node.borrow();
-                    borrowed
-                        .key
-                        .as_ref()
-                        .expect("non-head node should have key")
-                        .cmp(key)
-                };
-
-                if ord == Ordering::Less {
-                    current = next_node;
-                    continue;
                 }
-
-                break;
             }
-
             update[level] = current.clone();
+            rank[level] = current_rank;
         }
-    }
-
-    fn search_node(&self, key: &K) -> Option<Rc<RefCell<Node<K, V>>>>
-    where
-        K: Ord,
-    {
-        let mut current = self.head.clone();
-
-        for level in (0..self.level).rev() {
-            loop {
-                let next = current.borrow().forwards[level].clone();
-                let Some(next_node) = next else {
-                    break;
-                };
-
-                let ord = {
-                    let borrowed = next_node.borrow();
-                    borrowed
-                        .key
-                        .as_ref()
-                        .expect("non-head node should have key")
-                        .cmp(key)
-                };
-
-                match ord {
-                    Ordering::Less => current = next_node,
-                    Ordering::Equal => return Some(next_node),
-                    Ordering::Greater => break,
-                }
-            }
-        }
-
-        let next = current.borrow().forwards[0].clone()?;
-        let is_match = {
-            let borrowed = next.borrow();
-            borrowed
-                .key
-                .as_ref()
-                .expect("non-head node should have key")
-                == key
-        };
-
-        is_match.then_some(next)
-    }
-
-    fn index_of_key(&self, key: &K) -> Option<usize>
-    where
-        K: Ord,
-    {
-        let mut index = 0usize;
-        let mut current = self.head.borrow().forwards[0].clone();
-
-        while let Some(node) = current {
-            let ord = {
-                let borrowed = node.borrow();
-                borrowed
-                    .key
-                    .as_ref()
-                    .expect("non-head node should have key")
-                    .cmp(key)
-            };
-
-            match ord {
-                Ordering::Less => {
-                    index += 1;
-                    current = node.borrow().forwards[0].clone();
-                }
-                Ordering::Equal => return Some(index),
-                Ordering::Greater => return None,
-            }
-        }
-
-        None
+        found_rank
     }
 }
 
@@ -375,7 +362,7 @@ where
         let (next, key, value) = {
             let borrowed = current.borrow();
             (
-                borrowed.forwards[0].clone(),
+                borrowed.forwards[0].next.clone(),
                 borrowed
                     .key
                     .as_ref()
@@ -407,43 +394,47 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut update = vec![self.head.clone(); self.max_level];
-        self.find_update_path(&key, &mut update);
-
-        if let Some(candidate) = update[0].borrow().forwards[0].clone() {
-            let is_equal = {
-                let borrowed = candidate.borrow();
-                borrowed
-                    .key
-                    .as_ref()
-                    .expect("non-head node should have key")
-                    == &key
-            };
-
-            if is_equal {
-                let mut candidate_mut = candidate.borrow_mut();
-                return Some(
-                    candidate_mut
-                        .value
-                        .replace(value)
-                        .expect("non-head node should have value"),
-                );
-            }
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(&key, &mut update, &mut rank).is_some() {
+            let candidate = update[0].borrow().forwards[0].next.clone().unwrap();
+            let mut candidate_mut = candidate.borrow_mut();
+            return Some(
+                candidate_mut
+                    .value
+                    .replace(value)
+                    .expect("non-head node should have value"),
+            );
         }
 
         let new_level = self.random_level();
         if new_level > self.level {
-            for slot in update.iter_mut().take(new_level).skip(self.level) {
-                *slot = self.head.clone();
+            for i in self.level..new_level {
+                rank[i] = 0;
+                update[i] = self.head.clone();
+                update[i].borrow_mut().forwards[i].span = self.len + 1;
             }
             self.level = new_level;
         }
 
         let new_node = Rc::new(RefCell::new(Node::new(key, value, new_level)));
 
-        for (level, updater) in update.iter().enumerate().take(new_level) {
-            let next = updater.borrow().forwards[level].clone();
-            new_node.borrow_mut().forwards[level] = next;
-            updater.borrow_mut().forwards[level] = Some(new_node.clone());
+        for level in 0..new_level {
+            let mut updater = update[level].borrow_mut();
+            let next = updater.forwards[level].next.take();
+            let old_span = updater.forwards[level].span;
+
+            new_node.borrow_mut().forwards[level] = Forward {
+                next,
+                span: old_span - (rank[0] - rank[level]),
+            };
+            updater.forwards[level] = Forward {
+                next: Some(new_node.clone()),
+                span: (rank[0] - rank[level]) + 1,
+            };
+        }
+
+        for level in new_level..self.level {
+            update[level].borrow_mut().forwards[level].span += 1;
         }
 
         self.len += 1;
@@ -451,10 +442,12 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
     }
 
     fn cursor<'a>(&'a self, key: &K) -> Option<Self::Cursor<'a>> {
-        let index = self.index_of_key(key)?;
-        let node = self.search_node(key)?;
+        let mut update = vec![self.head.clone(); self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        let found_rank = self.find_update_path(key, &mut update, &mut rank)?;
+        let node = update[0].borrow().forwards[0].next.clone()?;
         Some(SkipCursor {
-            index,
+            index: found_rank - 1,
             node,
             marker: PhantomData,
         })
@@ -466,35 +459,31 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
 
     fn remove(&mut self, key: &K) -> Option<V> {
         let mut update = vec![self.head.clone(); self.max_level];
-        self.find_update_path(key, &mut update);
-
-        let target = update[0].borrow().forwards[0].clone()?;
-        let is_match = {
-            let borrowed = target.borrow();
-            borrowed
-                .key
-                .as_ref()
-                .expect("non-head node should have key")
-                == key
-        };
-
-        if !is_match {
+        let mut rank = vec![0usize; self.max_level];
+        if self.find_update_path(key, &mut update, &mut rank).is_none() {
             return None;
         }
 
+        let target = update[0].borrow().forwards[0].next.clone().unwrap();
         let target_level = target.borrow().level();
 
-        for (level, updater) in update.iter().enumerate().take(target_level) {
-            let replace = updater.borrow().forwards[level]
-                .as_ref()
-                .is_some_and(|candidate| Rc::ptr_eq(candidate, &target));
-            if replace {
-                let successor = target.borrow().forwards[level].clone();
-                updater.borrow_mut().forwards[level] = successor;
+        for level in 0..self.level {
+            let mut updater = update[level].borrow_mut();
+            if level < target_level
+                && updater.forwards[level]
+                    .next
+                    .as_ref()
+                    .is_some_and(|candidate| Rc::ptr_eq(candidate, &target))
+            {
+                let target_borrow = target.borrow();
+                updater.forwards[level].span += target_borrow.forwards[level].span - 1;
+                updater.forwards[level].next = target_borrow.forwards[level].next.clone();
+            } else {
+                updater.forwards[level].span -= 1;
             }
         }
 
-        while self.level > 1 && self.head.borrow().forwards[self.level - 1].is_none() {
+        while self.level > 1 && self.head.borrow().forwards[self.level - 1].next.is_none() {
             self.level -= 1;
         }
 
@@ -509,7 +498,9 @@ impl<K: Ord, V> Map<K, V> for SkipList<K, V> {
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.search_node(key).is_some()
+        let mut update = vec![self.head.clone(); self.max_level];
+        let mut rank = vec![0usize; self.max_level];
+        self.find_update_path(key, &mut update, &mut rank).is_some()
     }
 
     fn clear(&mut self) {

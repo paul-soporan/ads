@@ -8,18 +8,20 @@ import { AppButton } from "@/components/ui/AppButton";
 import type { CriterionRecord, NormalizedBenchmarkDataset } from "@/lib/bench/types";
 
 interface InspectorPaneProps {
-  records: CriterionRecord[];
+  snapshotRecords: CriterionRecord[];
   trendRecords: CriterionRecord[];
   dataset: NormalizedBenchmarkDataset;
   selectedImplementations: string[];
+  onToggleImplementation: (implementation: string) => void;
   onResetComparison: () => void;
 }
 
 function InspectorPaneInner({
-  records,
+  snapshotRecords,
   trendRecords,
   dataset,
   selectedImplementations,
+  onToggleImplementation,
   onResetComparison,
 }: InspectorPaneProps) {
   if (selectedImplementations.length === 0) {
@@ -39,14 +41,16 @@ function InspectorPaneInner({
       <div className="min-h-0 flex-1 overflow-auto">
         {selectedImplementations.length >= 2 ? (
           <VersusComparison
-            records={records}
+            records={snapshotRecords}
             trendRecords={trendRecords}
             dataset={dataset}
             selectedImplementations={selectedImplementations}
+            onToggleImplementation={onToggleImplementation}
           />
         ) : (
           <VariantDrilldown
-            records={trendRecords}
+            snapshotRecords={snapshotRecords}
+            trendRecords={trendRecords}
             dataset={dataset}
             selectedImplementations={selectedImplementations}
           />

@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 fastrand = "2"
 
+[features]
+bench = []
+
 [dev-dependencies]
 criterion = "0.5"
 dhat = "0.3"
@@ -26,6 +29,11 @@ harness = false
 [[bench]]
 name = "micro_maps_large_payload_criterion"
 path = "benches/micro/maps_large_payload_criterion.rs"
+harness = false
+
+[[bench]]
+name = "micro_dsu_criterion"
+path = "benches/micro/dsu.rs"
 harness = false
 
 [[bench]]
@@ -66,6 +74,11 @@ harness = false
 [[bench]]
 name = "micro_maps_callgrind"
 path = "benches/callgrind/micro_maps_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "micro_dsu_callgrind"
+path = "benches/callgrind/micro_dsu_callgrind.rs"
 harness = false
 
 [[bench]]
@@ -116,6 +129,11 @@ harness = false
 [[bench]]
 name = "micro_heaps_dhat"
 path = "benches/memory/micro_heaps_dhat.rs"
+harness = false
+
+[[bench]]
+name = "micro_dsu_dhat"
+path = "benches/memory/micro_dsu_dhat.rs"
 harness = false
 
 [[bench]]

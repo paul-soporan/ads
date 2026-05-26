@@ -28,6 +28,7 @@ struct JoinKeys {
     workload: String,
     payload: String,
     operation: String,
+    distribution: String,
     implementation: String,
     size: usize,
     variant: String,
@@ -216,15 +217,11 @@ fn ensure_strict_one_to_one_to_one(operations: &[OperationGroup]) -> Result<()> 
     }
 
     if violations.len() > 20 {
-        preview.push_str(&format!(
-            "\n- ... and {} more",
-            violations.len() - 20
-        ));
+        preview.push_str(&format!("\n- ... and {} more", violations.len() - 20));
     }
 
     Err(anyhow!(
-        "aggregation requires strict 1:1:1 mapping (criterion/callgrind/dhat). \
-found {} invalid operation groups:{}",
+        "aggregation requires strict 1:1:1 mapping (criterion/callgrind/dhat). found {} invalid operation groups:{}",
         violations.len(),
         preview
     ))
@@ -294,11 +291,13 @@ fn parse_criterion_file(root: &Path, path: &Path, path_re: &Regex) -> Result<Cri
     let (operation, implementation) = split_function_taxonomy(&function);
     let workload = group.to_string();
     let payload = infer_payload(&group, &function);
+    let distribution = infer_distribution(&workload, &payload, &operation, &function);
     let variant = infer_variant(&implementation);
     let join = build_join_keys(
         &workload,
         &payload,
         &operation,
+        &distribution,
         &implementation,
         size,
         &variant,
@@ -346,10 +345,12 @@ fn parse_throughput_elements(path: &Path) -> Option<u64> {
 }
 
 fn split_function_taxonomy(function: &str) -> (String, String) {
+    // Try splitting by slash first (new convention)
+    if let Some((op, impl_name)) = function.split_once('/') {
+        return (op.to_string(), impl_name.to_string());
+    }
+
     const PREFIXES: &[&str] = &[
-        "contains_temporal",
-        "contains_zipf",
-        "contains_mixed",
         "contains",
         "push_pop",
         "bulk_insert",
@@ -357,13 +358,16 @@ fn split_function_taxonomy(function: &str) -> (String, String) {
         "remove",
         "mix",
         "thrash",
+        "merge",
+        "index",
+        "union_find",
     ];
 
     for prefix in PREFIXES {
-        if let Some(rest) = function.strip_prefix(prefix)
-            && let Some(implementation) = rest.strip_prefix('_')
-        {
-            return ((*prefix).to_string(), implementation.to_string());
+        if let Some(rest) = function.strip_prefix(prefix) {
+            let rest = rest.strip_prefix('_').unwrap_or(rest);
+            // Handle cases where the rest starts with ads_ or other crate prefix
+            return ((*prefix).to_string(), rest.to_string());
         }
     }
 
@@ -448,15 +452,10 @@ fn collect_callgrind(root: &Path) -> Result<Vec<CallgrindRecord>> {
 
 fn parse_callgrind(root: &Path, path: &Path) -> Result<CallgrindRecord> {
     let raw = fs::read_to_string(path)?;
-    let mut command: Option<String> = None;
     let mut events: Vec<String> = Vec::new();
     let mut metrics: HashMap<String, u64> = HashMap::new();
 
     for line in raw.lines() {
-        if let Some(value) = line.strip_prefix("cmd:") {
-            command = Some(value.trim().to_string());
-            continue;
-        }
         if let Some(value) = line.strip_prefix("events:") {
             events = value
                 .split_whitespace()
@@ -480,7 +479,7 @@ fn parse_callgrind(root: &Path, path: &Path) -> Result<CallgrindRecord> {
         .to_string_lossy()
         .replace('\\', "/");
 
-    let join = parse_callgrind_join(&rel, command.as_deref());
+    let join = parse_callgrind_join(&rel);
     Ok(CallgrindRecord {
         join,
         measurement: CallgrindMeasurement {
@@ -643,6 +642,48 @@ fn infer_payload(workload: &str, function: &str) -> String {
     "u64".to_string()
 }
 
+fn infer_distribution(workload: &str, payload: &str, operation: &str, function: &str) -> String {
+    let blob = format!("{workload} {payload} {operation} {function}").to_lowercase();
+
+    if blob.contains("zipf") {
+        return "zipfian".to_string();
+    }
+    if blob.contains("temporal") {
+        return "temporal".to_string();
+    }
+    if blob.contains("sorted") {
+        return "sorted".to_string();
+    }
+    if blob.contains("mixed") || blob.contains("read_heavy") || blob.contains("write_heavy") {
+        return "mixed".to_string();
+    }
+
+    if matches!(operation, "mix" | "thrash") {
+        return "mixed".to_string();
+    }
+
+    if operation == "contains" {
+        if workload.contains("hash_collisions") {
+            return "temporal".to_string();
+        }
+        if workload.contains("strings") {
+            return "mixed".to_string();
+        }
+        if workload.contains("btree_cache") || payload == "u64" || payload == "large_payload" {
+            return "zipfian".to_string();
+        }
+    }
+
+    if workload.starts_with("micro_")
+        || workload.starts_with("sweep_")
+        || workload.starts_with("motivational_")
+    {
+        return "uniform".to_string();
+    }
+
+    "other".to_string()
+}
+
 fn infer_variant(implementation: &str) -> String {
     let normalized = implementation.to_lowercase();
     if normalized.contains("_safe") {
@@ -666,11 +707,16 @@ fn normalize_callgrind_workload(workload: &str, payload: &str) -> String {
             workload,
             "micro_maps"
                 | "micro_heaps"
+                | "micro_dsu"
+                | "micro_sequences"
                 | "macro_read_heavy"
                 | "macro_write_heavy"
                 | "macro_thrashing"
                 | "sweep_btree_cache"
                 | "sweep_hash_collisions"
+                | "motivational_heap_merge"
+                | "motivational_dsu_connectivity"
+                | "micro_sequences_indexing"
         )
     {
         return format!("{workload}_u64");
@@ -682,6 +728,7 @@ fn build_join_keys(
     workload: &str,
     payload: &str,
     operation: &str,
+    distribution: &str,
     implementation: &str,
     size: usize,
     variant: &str,
@@ -690,11 +737,12 @@ fn build_join_keys(
         workload: workload.to_string(),
         payload: payload.to_string(),
         operation: operation.to_string(),
+        distribution: distribution.to_string(),
         implementation: implementation.to_string(),
         size,
         variant: variant.to_string(),
         join_key: format!(
-            "workload={workload}|payload={payload}|op={operation}|impl={implementation}|size={size}|variant={variant}"
+            "workload={workload}|payload={payload}|op={operation}|dist={distribution}|impl={implementation}|size={size}|variant={variant}"
         ),
     }
 }
@@ -707,99 +755,52 @@ fn parse_size_token(token: &str) -> Option<usize> {
     token.parse::<usize>().ok()
 }
 
-fn parse_callgrind_join(path: &str, command: Option<&str>) -> Option<JoinKeys> {
+fn parse_callgrind_join(path: &str) -> Option<JoinKeys> {
     // New format from split targets: callgrind_<workload>_<operation>_<implementation>.n<size>
     let name_re = Regex::new(
-        r"callgrind\.(?P<name>callgrind_[a-z0-9_]+)\.n(?P<size>\d+k?|\d+)(?:\.\d+)?\.out(?:\.#\d+)?",
+        r"callgrind\.(?P<name>callgrind_[A-Za-z0-9_]+)\.n(?P<size>\d+k?|\d+)(?:\.\d+)?\.out(?:\.#\d+)?",
     )
     .ok()?;
 
-    if let Some(caps) = name_re.captures(path) {
-        let full_name = caps.name("name")?.as_str();
-        let size = parse_size_token(caps.name("size")?.as_str()).unwrap_or(0);
+    let caps = name_re.captures(path)?;
+    let full_name = caps.name("name")?.as_str();
+    let size = parse_size_token(caps.name("size")?.as_str()).unwrap_or(0);
+    let rest = full_name.strip_prefix("callgrind_")?;
 
-        if full_name.starts_with("callgrind__") {
-            // Legacy encoded format is handled by the fallback parser below.
-        } else if let Some(rest) = full_name.strip_prefix("callgrind_") {
-            let operations = [
-                "contains_temporal",
-                "contains_zipf",
-                "contains_mixed",
-                "push_pop",
-                "insert",
-                "remove",
-                "mix",
-                "thrash",
-            ];
+    let operations = [
+        "contains",
+        "push_pop",
+        "insert",
+        "remove",
+        "mix",
+        "thrash",
+        "merge",
+        "index",
+        "union_find",
+    ];
 
-            for op in operations {
-                let token = format!("_{op}_");
-                if let Some(index) = rest.find(&token) {
-                    let workload = rest[..index].to_string();
-                    let implementation = rest[index + token.len()..].to_string();
-                    let payload = infer_payload(&workload, "");
-                    let workload = normalize_callgrind_workload(&workload, &payload);
-                    let variant = infer_variant(&implementation);
-                    return Some(build_join_keys(
-                        &workload,
-                        &payload,
-                        op,
-                        &implementation,
-                        size,
-                        &variant,
-                    ));
-                }
-            }
+    for op in operations {
+        let token = format!("_{op}_");
+        if let Some(index) = rest.rfind(&token) {
+            let workload = rest[..index].to_string();
+            let implementation = rest[index + token.len()..].to_string();
+            let payload = infer_payload(&workload, "");
+            let workload = normalize_callgrind_workload(&workload, &payload);
+            let distribution = infer_distribution(&workload, &payload, op, "");
+            let variant = infer_variant(&implementation);
+            return Some(build_join_keys(
+                &workload,
+                &payload,
+                op,
+                &distribution,
+                &implementation,
+                size,
+                &variant,
+            ));
         }
     }
 
-    // Backstop for existing encoded format.
-    let source = format!("{} {}", path, command.unwrap_or_default());
-    let token_re = Regex::new(r"callgrind__[^\s/]+(?:__[^\s/]+)*").ok()?;
-    let token = token_re
-        .find_iter(&source)
-        .last()
-        .map(|m| m.as_str().to_string())?;
-
-    let mut workload: Option<String> = None;
-    let mut payload: Option<String> = None;
-    let mut operation: Option<String> = None;
-    let mut implementation: Option<String> = None;
-
-    for segment in token.split("__") {
-        if let Some(value) = segment.strip_prefix("workload_") {
-            workload = Some(value.to_string());
-        } else if let Some(value) = segment.strip_prefix("payload_") {
-            payload = Some(value.to_string());
-        } else if let Some(value) = segment.strip_prefix("op_") {
-            operation = Some(value.to_string());
-        } else if let Some(value) = segment.strip_prefix("impl_") {
-            implementation = Some(value.to_string());
-        }
-    }
-
-    let size_re = Regex::new(r"\.n(?P<size>\d+k?|\d+)(?:\.\d+)?\.out(?:\.#\d+)?").ok()?;
-    let size = size_re
-        .captures(path)
-        .and_then(|size_caps| size_caps.name("size"))
-        .and_then(|m| parse_size_token(m.as_str()))
-        .unwrap_or(0);
-
-    let workload = workload?;
-    let payload = payload.unwrap_or_else(|| "u64".to_string());
-    let workload = normalize_callgrind_workload(&workload, &payload);
-    let operation = operation?;
-    let implementation = implementation?;
-    let variant = infer_variant(&implementation);
-
-    Some(build_join_keys(
-        &workload,
-        &payload,
-        &operation,
-        &implementation,
-        size,
-        &variant,
-    ))
+    None
 }
 
 fn parse_dhat_join(path: &Path) -> Option<JoinKeys> {
@@ -832,6 +833,7 @@ fn parse_dhat_join(path: &Path) -> Option<JoinKeys> {
     let workload = workload?;
     let payload = payload.unwrap_or_else(|| "u64".to_string());
     let operation = operation?;
+    let distribution = infer_distribution(&workload, &payload, &operation, "");
     let implementation = implementation?;
     let size = size.unwrap_or(0);
     let variant = infer_variant(&implementation);
@@ -840,6 +842,7 @@ fn parse_dhat_join(path: &Path) -> Option<JoinKeys> {
         &workload,
         &payload,
         &operation,
+        &distribution,
         &implementation,
         size,
         &variant,

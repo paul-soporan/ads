@@ -26,8 +26,27 @@ export interface ImplementationAggregate {
     Ir?: number;
     Dr?: number;
     Dw?: number;
+    I1mr?: number;
     D1mr?: number;
     D1mw?: number;
+    ILmr?: number;
+    DLmr?: number;
+    DLmw?: number;
+  };
+  profiling: {
+    hasCallgrind: boolean;
+    hasDhat: boolean;
+    instructions: number | null;
+    memoryAccesses: number | null;
+    l1DataMissRate: number | null;
+    l1InstructionMissRate: number | null;
+    llDataMissRate: number | null;
+    peakBytes: number | null;
+    totalBytes: number | null;
+    peakBlocks: number | null;
+    totalBlocks: number | null;
+    allocationChurnRatio: number | null;
+    bytesPerElement: number | null;
   };
 }
 
@@ -37,9 +56,50 @@ export interface ParetoPoint {
   estimatedMemoryBytes: number;
 }
 
+type RadarVariantKey = "safe" | "raw" | "arena";
+type RadarTransform = "linear" | "log1p";
+
+export type VariantRadarMetricFormat =
+  | "latency_ns"
+  | "ratio"
+  | "bytes_per_element"
+  | "instructions_per_element"
+  | "allocation_ratio";
+
+export interface VariantRadarMetric {
+  key: string;
+  axis: string;
+  description: string;
+  formatter: VariantRadarMetricFormat;
+  lowerIsBetter: boolean;
+  contextCount: number;
+  contextMedian: number | null;
+  safe: number | null;
+  raw: number | null;
+  arena: number | null;
+  safeRaw: number | null;
+  rawRaw: number | null;
+  arenaRaw: number | null;
+}
+
+export interface VariantRadarResult {
+  metrics: VariantRadarMetric[];
+  omittedAxes: string[];
+}
+
+type RadarMetricSpec = {
+  key: string;
+  axis: string;
+  description: string;
+  formatter: VariantRadarMetricFormat;
+  lowerIsBetter: boolean;
+  transform: RadarTransform;
+  getValue: (item: ImplementationAggregate) => number | null;
+};
+
 function toFamilyName(implementation: string): string {
   return implementation
-    .replace(/^(contains_zipf_|contains_temporal_|contains_mixed_|contains_|insert_|remove_|mix_|thrash_|push_pop_|workload_read_heavy_|workload_write_heavy_)/, "")
+    .replace(/^(contains_|insert_|remove_|mix_|thrash_|push_pop_|workload_read_heavy_|workload_write_heavy_)/, "")
     .replace(/(^|_)safe(_|$)/g, "_")
     .replace(/(^|_)raw(_|$)/g, "_")
     .replace(/(^|_)arena(_|$)/g, "_")
@@ -74,23 +134,23 @@ function averageMetrics(metricsList: Record<string, number>[]): Record<string, n
 }
 
 function extractCallgrindMetadata(dataset: NormalizedBenchmarkDataset) {
-  const byImplementation = new Map<string, Record<string, number>>();
-  const implementationBuckets = new Map<string, Record<string, number>[]>();
+  const byJoinKey = new Map<string, Record<string, number>>();
+  const joinKeyBuckets = new Map<string, Record<string, number>[]>();
 
   for (const record of dataset.callgrind) {
-    const implementation = normalizeImplementationKey(record.implementation);
-    if (!implementation) continue;
+    const joinKey = record.joinKey;
+    if (!joinKey) continue;
 
-    const implList = implementationBuckets.get(implementation) ?? [];
-    implList.push(record.metrics);
-    implementationBuckets.set(implementation, implList);
+    const metricsForJoinKey = joinKeyBuckets.get(joinKey) ?? [];
+    metricsForJoinKey.push(record.metrics);
+    joinKeyBuckets.set(joinKey, metricsForJoinKey);
   }
 
-  for (const [implementation, metrics] of implementationBuckets.entries()) {
-    byImplementation.set(implementation, averageMetrics(metrics));
+  for (const [joinKey, metrics] of joinKeyBuckets.entries()) {
+    byJoinKey.set(joinKey, averageMetrics(metrics));
   }
 
-  return { byImplementation };
+  return { byJoinKey };
 }
 
 function average(values: number[]): number {
@@ -98,39 +158,105 @@ function average(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function quantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+
+  const sorted = values.slice().sort((a, b) => a - b);
+  const position = (sorted.length - 1) * clamp(q, 0, 1);
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const lower = sorted[lowerIndex] ?? sorted[0] ?? 0;
+  const upper = sorted[upperIndex] ?? sorted[sorted.length - 1] ?? lower;
+
+  if (lowerIndex === upperIndex) return lower;
+
+  const weight = position - lowerIndex;
+  return lower + (upper - lower) * weight;
+}
+
+function transformForRadar(value: number, mode: RadarTransform): number {
+  if (mode === "log1p") {
+    return Math.log1p(Math.max(0, value));
+  }
+
+  return value;
+}
+
+function robustRadarScore(value: number, contextualValues: number[], lowerIsBetter: boolean, transform: RadarTransform): number {
+  if (contextualValues.length < 2) return 0.5;
+
+  const transformed = contextualValues.map((item) => transformForRadar(item, transform));
+  const median = quantile(transformed, 0.5);
+  const q1 = quantile(transformed, 0.25);
+  const q3 = quantile(transformed, 0.75);
+  const range = Math.max(...transformed) - Math.min(...transformed);
+  const spread = Math.max(q3 - q1, range / 4, 1e-9);
+  const offset = (transformForRadar(value, transform) - median) / spread;
+  const direction = lowerIsBetter ? -offset : offset;
+  const sigmoid = 1 / (1 + Math.exp(-direction * 1.35));
+
+  return clamp(sigmoid, 0.06, 0.94);
+}
+
+function isRadarVariant(variant: VariantKind): variant is RadarVariantKey {
+  return variant === "safe" || variant === "raw" || variant === "arena";
+}
+
+function averageNullable(values: Array<number | null | undefined>): number | null {
+  const present = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (present.length === 0) return null;
+  return average(present);
+}
+
 function buildDhatLookup(dataset: NormalizedBenchmarkDataset): {
-  byImplementation: Map<string, number>;
-  byImplementationAndShape: Map<string, number>;
+  byJoinKey: Map<string, {
+    peakBytes: number | null;
+    totalBytes: number | null;
+    peakBlocks: number | null;
+    totalBlocks: number | null;
+  }>;
 } {
-  const implementationBuckets = new Map<string, number[]>();
-  const implementationAndShapeBuckets = new Map<string, number[]>();
+  const joinKeyBuckets = new Map<string, Array<{
+    peakBytes: number | null;
+    totalBytes: number | null;
+    peakBlocks: number | null;
+    totalBlocks: number | null;
+  }>>();
 
   for (const row of dataset.dhat) {
-    const maxBytes = row.maxBytes ?? row.totalBytes ?? 0;
-    if (maxBytes <= 0) continue;
+    const joinKey = row.joinKey;
+    if (!joinKey) continue;
 
-    const impl = normalizeImplementationKey(row.implementation);
-    const byImpl = implementationBuckets.get(impl) ?? [];
-    byImpl.push(maxBytes);
-    implementationBuckets.set(impl, byImpl);
-
-    const shapeKey = `${impl}|${row.operation}|${row.payload}|${row.size}`;
-    const byShape = implementationAndShapeBuckets.get(shapeKey) ?? [];
-    byShape.push(maxBytes);
-    implementationAndShapeBuckets.set(shapeKey, byShape);
+    const valuesForJoinKey = joinKeyBuckets.get(joinKey) ?? [];
+    valuesForJoinKey.push({
+      peakBytes: row.maxBytes,
+      totalBytes: row.totalBytes,
+      peakBlocks: row.maxBlocks,
+      totalBlocks: row.totalBlocks,
+    });
+    joinKeyBuckets.set(joinKey, valuesForJoinKey);
   }
 
-  const byImplementation = new Map<string, number>();
-  for (const [key, values] of implementationBuckets.entries()) {
-    byImplementation.set(key, average(values));
+  const byJoinKey = new Map<string, {
+    peakBytes: number | null;
+    totalBytes: number | null;
+    peakBlocks: number | null;
+    totalBlocks: number | null;
+  }>();
+  for (const [joinKey, values] of joinKeyBuckets.entries()) {
+    byJoinKey.set(joinKey, {
+      peakBytes: averageNullable(values.map((value) => value.peakBytes)),
+      totalBytes: averageNullable(values.map((value) => value.totalBytes)),
+      peakBlocks: averageNullable(values.map((value) => value.peakBlocks)),
+      totalBlocks: averageNullable(values.map((value) => value.totalBlocks)),
+    });
   }
 
-  const byImplementationAndShape = new Map<string, number>();
-  for (const [key, values] of implementationAndShapeBuckets.entries()) {
-    byImplementationAndShape.set(key, average(values));
-  }
-
-  return { byImplementation, byImplementationAndShape };
+  return { byJoinKey };
 }
 
 export function buildImplementationAggregates(
@@ -188,23 +314,70 @@ export function buildImplementationAggregates(
     const distribution = mode(distributionCounts, "other");
     const payload = mode(payloadCounts, "other");
 
-    const normalizedImplementation = normalizeImplementationKey(implementation);
-    const callgrind = callgrindMetadata.byImplementation.get(normalizedImplementation);
-    if (!callgrind) {
-      throw new Error(`Missing callgrind metrics for implementation: ${implementation}`);
-    }
-
-    const dhatShapeValues = list.map((item) => {
-      const shapeKey = `${normalizedImplementation}|${item.operation}|${item.payload}|${item.size}`;
-      const value = dhatLookup.byImplementationAndShape.get(shapeKey);
-      if (value === undefined) {
-        throw new Error(`Missing dhat metrics for shape: ${shapeKey}`);
-      }
-
-      return value;
+    const callgrindValues = list.map((item) => {
+      const value = callgrindMetadata.byJoinKey.get(item.joinKey);
+      return value ?? null;
     });
 
-    const estimatedMemoryBytes = average(dhatShapeValues);
+    const dhatValues = list.map((item) => {
+      const value = dhatLookup.byJoinKey.get(item.joinKey);
+      return value ?? null;
+    });
+
+    const presentCallgrind = callgrindValues.filter((value): value is Record<string, number> => value !== null);
+    const presentDhat = dhatValues.filter((value): value is {
+      peakBytes: number | null;
+      totalBytes: number | null;
+      peakBlocks: number | null;
+      totalBlocks: number | null;
+    } => value !== null);
+
+    const estimatedMemoryBytes = averageNullable(presentDhat.map((value) => value.peakBytes)) ?? 0;
+    const callgrind = presentCallgrind.length > 0 ? averageMetrics(presentCallgrind) : {};
+
+    const instructions = callgrind.Ir ?? null;
+    const dataReads = callgrind.Dr ?? null;
+    const dataWrites = callgrind.Dw ?? null;
+    const i1Misses = callgrind.I1mr ?? null;
+    const d1ReadMisses = callgrind.D1mr ?? null;
+    const d1WriteMisses = callgrind.D1mw ?? null;
+    const llReadMisses = callgrind.DLmr ?? null;
+    const llWriteMisses = callgrind.DLmw ?? null;
+
+    const memoryAccesses =
+      dataReads != null && dataWrites != null
+        ? dataReads + dataWrites
+        : null;
+
+    const l1DataMissRate =
+      memoryAccesses != null && memoryAccesses > 0 && d1ReadMisses != null && d1WriteMisses != null
+        ? (d1ReadMisses + d1WriteMisses) / memoryAccesses
+        : null;
+
+    const l1InstructionMissRate =
+      instructions != null && instructions > 0 && i1Misses != null
+        ? i1Misses / instructions
+        : null;
+
+    const llDataMissRate =
+      memoryAccesses != null && memoryAccesses > 0 && llReadMisses != null && llWriteMisses != null
+        ? (llReadMisses + llWriteMisses) / memoryAccesses
+        : null;
+
+    const peakBytes = averageNullable(presentDhat.map((value) => value.peakBytes));
+    const totalBytes = averageNullable(presentDhat.map((value) => value.totalBytes));
+    const peakBlocks = averageNullable(presentDhat.map((value) => value.peakBlocks));
+    const totalBlocks = averageNullable(presentDhat.map((value) => value.totalBlocks));
+
+    const allocationChurnRatio =
+      peakBytes != null && peakBytes > 0 && totalBytes != null
+        ? totalBytes / peakBytes
+        : null;
+
+    const bytesPerElement =
+      peakBytes != null && throughput > 0
+        ? peakBytes / throughput
+        : null;
 
     return {
       implementation,
@@ -222,6 +395,21 @@ export function buildImplementationAggregates(
       sampleCount,
       estimatedMemoryBytes,
       callgrind,
+      profiling: {
+        hasCallgrind: presentCallgrind.length > 0,
+        hasDhat: presentDhat.length > 0,
+        instructions,
+        memoryAccesses,
+        l1DataMissRate,
+        l1InstructionMissRate,
+        llDataMissRate,
+        peakBytes,
+        totalBytes,
+        peakBlocks,
+        totalBlocks,
+        allocationChurnRatio,
+        bytesPerElement,
+      },
     } satisfies ImplementationAggregate;
   });
 
@@ -244,6 +432,138 @@ export function buildParetoFront(points: ParetoPoint[]): ParetoPoint[] {
   }
 
   return frontier;
+}
+
+export function buildVariantRadarMetrics(
+  aggregates: ImplementationAggregate[],
+  focusFamily: string,
+): VariantRadarResult {
+  const familyAggregates = aggregates.filter(
+    (item) => item.family === focusFamily && isRadarVariant(item.variant),
+  );
+
+  const byVariant = new Map<RadarVariantKey, ImplementationAggregate>();
+  for (const item of familyAggregates) {
+    if (isRadarVariant(item.variant)) {
+      byVariant.set(item.variant, item);
+    }
+  }
+
+  const availableVariants = (["safe", "raw", "arena"] as const).filter((variant) => byVariant.has(variant));
+
+  const specs: RadarMetricSpec[] = [
+    {
+      key: "context_speed",
+      axis: "Context Speed Score",
+      description: "Mean latency in the exact current workload slice. Lower latency scores higher.",
+      formatter: "latency_ns",
+      lowerIsBetter: true,
+      transform: "log1p",
+      getValue: (item) => item.meanNs,
+    },
+    {
+      key: "consistency",
+      axis: "Consistency Score",
+      description: "Relative runtime stability using coefficient of variation. Lower spread scores higher.",
+      formatter: "ratio",
+      lowerIsBetter: true,
+      transform: "linear",
+      getValue: (item) => (item.meanNs > 0 ? item.stdDevNs / item.meanNs : null),
+    },
+    {
+      key: "memory_efficiency",
+      axis: "Memory Efficiency Score",
+      description: "Peak memory normalized by work done when available. Lower bytes per element score higher.",
+      formatter: "bytes_per_element",
+      lowerIsBetter: true,
+      transform: "log1p",
+      getValue: (item) => item.profiling.bytesPerElement ?? item.profiling.peakBytes ?? item.estimatedMemoryBytes,
+    },
+    {
+      key: "cpu_efficiency",
+      axis: "CPU Efficiency Score",
+      description: "Instruction cost per processed element. Lower instruction overhead scores higher.",
+      formatter: "instructions_per_element",
+      lowerIsBetter: true,
+      transform: "log1p",
+      getValue: (item) => {
+        const instructions = item.profiling.instructions;
+        return instructions != null && item.throughputElements > 0
+          ? instructions / item.throughputElements
+          : null;
+      },
+    },
+    {
+      key: "cache_locality",
+      axis: "Cache Locality Score",
+      description: "L1 data miss rate in the current context. Lower miss rate scores higher.",
+      formatter: "ratio",
+      lowerIsBetter: true,
+      transform: "linear",
+      getValue: (item) => item.profiling.l1DataMissRate,
+    },
+    {
+      key: "allocation_discipline",
+      axis: "Allocation Discipline Score",
+      description: "Allocation churn relative to peak memory. Lower churn scores higher.",
+      formatter: "allocation_ratio",
+      lowerIsBetter: true,
+      transform: "log1p",
+      getValue: (item) => item.profiling.allocationChurnRatio,
+    },
+  ];
+
+  const metrics: VariantRadarMetric[] = [];
+  const omittedAxes: string[] = [];
+
+  for (const spec of specs) {
+    const contextualValues = aggregates
+      .map((item) => spec.getValue(item))
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+    const rawValues = {
+      safe: byVariant.get("safe") ? spec.getValue(byVariant.get("safe") as ImplementationAggregate) : null,
+      raw: byVariant.get("raw") ? spec.getValue(byVariant.get("raw") as ImplementationAggregate) : null,
+      arena: byVariant.get("arena") ? spec.getValue(byVariant.get("arena") as ImplementationAggregate) : null,
+    };
+
+    const visibleValues = availableVariants.map((variant) => rawValues[variant]);
+    const hasCompleteCoverage = visibleValues.every(
+      (value) => typeof value === "number" && Number.isFinite(value),
+    );
+
+    if (!hasCompleteCoverage || contextualValues.length === 0) {
+      omittedAxes.push(spec.axis);
+      continue;
+    }
+
+    metrics.push({
+      key: spec.key,
+      axis: spec.axis,
+      description: spec.description,
+      formatter: spec.formatter,
+      lowerIsBetter: spec.lowerIsBetter,
+      contextCount: contextualValues.length,
+      contextMedian: contextualValues.length > 0 ? quantile(contextualValues, 0.5) : null,
+      safeRaw: rawValues.safe,
+      rawRaw: rawValues.raw,
+      arenaRaw: rawValues.arena,
+      safe:
+        rawValues.safe != null
+          ? robustRadarScore(rawValues.safe, contextualValues, spec.lowerIsBetter, spec.transform)
+          : null,
+      raw:
+        rawValues.raw != null
+          ? robustRadarScore(rawValues.raw, contextualValues, spec.lowerIsBetter, spec.transform)
+          : null,
+      arena:
+        rawValues.arena != null
+          ? robustRadarScore(rawValues.arena, contextualValues, spec.lowerIsBetter, spec.transform)
+          : null,
+    });
+  }
+
+  return { metrics, omittedAxes };
 }
 
 export function formatBytes(bytes: number): string {

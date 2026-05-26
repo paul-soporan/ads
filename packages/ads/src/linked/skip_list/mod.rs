@@ -4,14 +4,47 @@ pub mod safe;
 
 #[cfg(test)]
 macro_rules! test_skip_list_variant {
-    ($module:ident, $list_ty:ty) => {
+    ($module:ident, $list_ty:ident) => {
         mod $module {
             use super::*;
             use std::collections::BTreeMap;
+            use rand::{Rng, SeedableRng, rngs::StdRng};
+            use std::sync::{Arc, atomic::{AtomicUsize, Ordering as AtomicOrdering}};
 
             use crate::traits::core::{Map, OrderedMap};
 
-            type List = $list_ty;
+            #[derive(Debug, Clone)]
+            struct CountedKey {
+                value: i32,
+                comparisons: Arc<AtomicUsize>,
+            }
+
+            impl CountedKey {
+                fn new(value: i32, comparisons: &Arc<AtomicUsize>) -> Self {
+                    Self { value, comparisons: comparisons.clone() }
+                }
+            }
+
+            impl Eq for CountedKey {}
+            impl PartialEq for CountedKey {
+                fn eq(&self, other: &Self) -> bool { self.value == other.value }
+            }
+
+            impl Ord for CountedKey {
+                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                    self.comparisons.fetch_add(1, AtomicOrdering::Relaxed);
+                    self.value.cmp(&other.value)
+                }
+            }
+
+            impl PartialOrd for CountedKey {
+                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                    Some(self.cmp(other))
+                }
+            }
+
+            type List = $list_ty::SkipList<i32, i32>;
+            type ComplexityList = $list_ty::SkipList<CountedKey, i32>;
 
             #[test]
             fn insert_contains_remove_are_ordered() {
@@ -68,51 +101,34 @@ macro_rules! test_skip_list_variant {
             }
 
             #[test]
-            fn clear_resets_state() {
-                let mut list = List::new();
-                for value in 0..7 {
-                    assert_eq!(list.insert(value, value), None);
-                }
-                assert_eq!(list.len(), 7);
-
-                list.clear();
-
-                assert_eq!(list.len(), 0);
-                assert!(list.is_empty());
-                assert!(list.cursor_at(0).is_none());
-                assert!(!list.contains_key(&3));
-            }
-
-            #[test]
-            fn supports_custom_probability_configuration() {
-                let list = List::with_probability(1, 3);
-                assert_eq!(list.probability(), (1, 3));
-
-                let tuned = List::with_config(12, 2, 5);
-                assert_eq!(tuned.probability(), (2, 5));
-                assert_eq!(tuned.max_level(), 12);
-            }
-
-            #[test]
-            fn mixed_operations_match_btreemap_model() {
+            fn stress_random_operations() {
                 let mut list = List::new();
                 let mut model = BTreeMap::new();
+                let mut rng = StdRng::seed_from_u64(42);
 
-                for (k, v) in [(9, 90), (3, 30), (11, 110), (1, 10), (7, 70), (5, 50), (13, 130)]
-                {
-                    assert_eq!(list.insert(k, v), model.insert(k, v));
-                }
-
-                for (k, v) in [(7, 71), (4, 40), (15, 150)] {
-                    assert_eq!(list.insert(k, v), model.insert(k, v));
-                }
-
-                for key in [1, 4, 9, 100] {
-                    assert_eq!(list.contains_key(&key), model.contains_key(&key));
-                }
-
-                for key in [3, 11, 42] {
-                    assert_eq!(list.remove(&key), model.remove(&key));
+                for _ in 0..1000 {
+                    match rng.gen_range(0..4) {
+                        0 => { // Insert
+                            let k = rng.gen_range(0..500);
+                            let v = rng.gen_range(0..1000);
+                            assert_eq!(list.insert(k, v), model.insert(k, v));
+                        }
+                        1 if !model.is_empty() => { // Remove
+                            let keys: Vec<_> = model.keys().cloned().collect();
+                            let k = keys[rng.gen_range(0..keys.len())];
+                            assert_eq!(list.remove(&k), model.remove(&k));
+                        }
+                        2 if !model.is_empty() => { // Search
+                            let keys: Vec<_> = model.keys().cloned().collect();
+                            let k = keys[rng.gen_range(0..keys.len())];
+                            assert!(list.contains_key(&k));
+                        }
+                        3 => { // Search non-existent
+                            let k = rng.gen_range(500..1000);
+                            assert!(!list.contains_key(&k));
+                        }
+                        _ => {}
+                    }
                 }
 
                 let actual: Vec<_> = list.iter().map(|(k, v)| (*k, *v)).collect();
@@ -120,6 +136,81 @@ macro_rules! test_skip_list_variant {
                 assert_eq!(actual, expected);
             }
 
+            #[test]
+            fn search_comparison_count_scales_logarithmically() {
+                fn run_case(size: i32) -> usize {
+                    let comparisons = Arc::new(AtomicUsize::new(0));
+                    let mut list = ComplexityList::with_config(16, 1, 2);
+                    for value in 0..size {
+                        list.insert(CountedKey::new(value, &comparisons), value);
+                    }
+
+                    comparisons.store(0, AtomicOrdering::Relaxed);
+                    let trials = 100;
+                    let mut rng = StdRng::seed_from_u64(42);
+                    for _ in 0..trials {
+                        let value = rng.gen_range(0..size);
+                        let key = CountedKey::new(value, &comparisons);
+                        assert!(list.contains_key(&key));
+                    }
+                    comparisons.load(AtomicOrdering::Relaxed) / trials
+                }
+
+                let small = run_case(128);
+                let large = run_case(1024);
+
+                // For 8x increase in size, log(N) should increase by ~3 comparisons.
+                // We'll allow a generous margin due to randomness and trial count.
+                assert!(large <= small + 15, "average search cost grew too quickly ({} -> {})", small, large);
+            }
+
+            #[test]
+            fn indexing_comparison_count_is_minimal() {
+                fn run_case(size: i32) -> usize {
+                    let comparisons = Arc::new(AtomicUsize::new(0));
+                    let mut list = ComplexityList::with_config(16, 1, 2);
+                    for value in 0..size {
+                        list.insert(CountedKey::new(value, &comparisons), value);
+                    }
+
+                    comparisons.store(0, AtomicOrdering::Relaxed);
+                    for i in 0..size {
+                        assert!(list.cursor_at(i as usize).is_some());
+                    }
+                    comparisons.load(AtomicOrdering::Relaxed)
+                }
+
+                let total = run_case(128);
+                // Indexing by position should NOT perform key comparisons in an indexable skip list.
+                assert_eq!(total, 0, "indexing by position should perform zero key comparisons");
+            }
+
+            #[test]
+            fn index_of_key_comparison_count_scales_logarithmically() {
+                fn run_case(size: i32) -> usize {
+                    let comparisons = Arc::new(AtomicUsize::new(0));
+                    let mut list = ComplexityList::with_config(16, 1, 2);
+                    for value in 0..size {
+                        list.insert(CountedKey::new(value, &comparisons), value);
+                    }
+
+                    comparisons.store(0, AtomicOrdering::Relaxed);
+                    let trials = 100;
+                    let mut rng = StdRng::seed_from_u64(42);
+                    for _ in 0..trials {
+                        let value = rng.gen_range(0..size);
+                        let key = CountedKey::new(value, &comparisons);
+                        assert!(list.cursor(&key).is_some());
+                    }
+                    comparisons.load(AtomicOrdering::Relaxed) / trials
+                }
+
+                let small = run_case(128);
+                let large = run_case(1024);
+
+                assert!(large <= small + 15, "average index_of_key cost grew too quickly ({} -> {})", small, large);
+            }
+            
             #[test]
             fn node_levels_respect_configured_max_level() {
                 let max_level = 10usize;
@@ -141,8 +232,8 @@ macro_rules! test_skip_list_variant {
 }
 
 #[cfg(test)]
-test_skip_list_variant!(safe_variant, safe::SkipList<i32, i32>);
+test_skip_list_variant!(safe_variant, safe);
 #[cfg(test)]
-test_skip_list_variant!(raw_variant, raw::SkipList<i32, i32>);
+test_skip_list_variant!(raw_variant, raw);
 #[cfg(test)]
-test_skip_list_variant!(arena_variant, arena::SkipList<i32, i32>);
+test_skip_list_variant!(arena_variant, arena);

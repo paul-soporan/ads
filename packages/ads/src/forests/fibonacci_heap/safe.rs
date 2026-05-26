@@ -13,6 +13,7 @@ struct FibonacciNode<T> {
     parent: Option<Weak<RefCell<FibonacciNode<T>>>>,
     child: Option<Rc<RefCell<FibonacciNode<T>>>>,
     sibling: Option<Rc<RefCell<FibonacciNode<T>>>>,
+    prev: Option<Weak<RefCell<FibonacciNode<T>>>>,
 }
 
 impl<T> FibonacciNode<T> {
@@ -24,6 +25,7 @@ impl<T> FibonacciNode<T> {
             parent: None,
             child: None,
             sibling: None,
+            prev: None,
         }
     }
 }
@@ -67,6 +69,10 @@ impl<T> Clone for FibonacciNodeCursor<T> {
 }
 
 impl<T> FibonacciNodeView<T> {
+    pub(crate) fn identity(&self) -> usize {
+        self.node.as_ptr() as usize
+    }
+
     pub fn value(&self) -> Ref<'_, T> {
         Ref::map(self.node.borrow(), |node| {
             node.value.as_ref().expect("node value should be present")
@@ -122,12 +128,19 @@ impl<T> FibonacciNodeCursor<T> {
 #[derive(Debug)]
 pub struct FibonacciHeap<T> {
     head: Option<Rc<RefCell<FibonacciNode<T>>>>,
+    tail: Option<Rc<RefCell<FibonacciNode<T>>>>,
+    min_node: Option<Rc<RefCell<FibonacciNode<T>>>>,
     len: usize,
 }
 
 impl<T: Ord> FibonacciHeap<T> {
     pub fn new() -> Self {
-        Self { head: None, len: 0 }
+        Self {
+            head: None,
+            tail: None,
+            min_node: None,
+            len: 0,
+        }
     }
 
     pub fn head_view(&self) -> Option<FibonacciNodeView<T>> {
@@ -154,6 +167,8 @@ impl<T: Ord> FibonacciHeap<T> {
 
     pub fn clear(&mut self) {
         self.head = None;
+        self.tail = None;
+        self.min_node = None;
         self.len = 0;
     }
 
@@ -167,22 +182,15 @@ impl<T: Ord> FibonacciHeap<T> {
         }
 
         while let Some(node) = stack.pop() {
-            if node
-                .borrow()
-                .value
-                .as_ref()
-                .is_some_and(|current| current == value)
-            {
-                return Some(FibonacciNodeCursor::from(node));
+            let node_borrow = node.borrow();
+            let node_value = node_borrow.value.as_ref().expect("node value");
+
+            if node_value == value {
+                return Some(FibonacciNodeCursor::from(node.clone()));
             }
 
-            if node
-                .borrow()
-                .value
-                .as_ref()
-                .is_some_and(|current| current < value)
-            {
-                let mut child = node.borrow().child.clone();
+            if node_value < value {
+                let mut child = node_borrow.child.clone();
                 while let Some(c) = child {
                     stack.push(c.clone());
                     child = c.borrow().sibling.clone();
@@ -194,40 +202,32 @@ impl<T: Ord> FibonacciHeap<T> {
     }
 
     pub fn min(&self) -> Option<FibonacciNodeCursor<T>> {
-        let mut min_node = None;
-        let mut current = self.head.clone();
+        self.min_node.clone().map(FibonacciNodeCursor::from)
+    }
 
-        while let Some(node) = current {
-            let is_smaller = min_node
-                .as_ref()
-                .is_none_or(|min: &Rc<RefCell<FibonacciNode<T>>>| {
-                    node.borrow()
-                        .value
-                        .as_ref()
-                        .expect("node value should be present")
-                        < min
-                            .borrow()
-                            .value
-                            .as_ref()
-                            .expect("node value should be present")
-                });
-
-            if is_smaller {
-                min_node = Some(node.clone());
+    fn update_min_node(&mut self, candidate: Rc<RefCell<FibonacciNode<T>>>) {
+        if let Some(min) = &self.min_node {
+            if candidate.borrow().value.as_ref().expect("value") < min.borrow().value.as_ref().expect("value") {
+                self.min_node = Some(candidate);
             }
-
-            current = node.borrow().sibling.clone();
+        } else {
+            self.min_node = Some(candidate);
         }
-
-        min_node.map(FibonacciNodeCursor::from)
     }
 
     pub fn insert(&mut self, value: T) {
-        let mut singleton = Self {
-            head: Some(Rc::new(RefCell::new(FibonacciNode::new(value)))),
-            len: 1,
-        };
-        self.merge(&mut singleton);
+        let node = Rc::new(RefCell::new(FibonacciNode::new(value)));
+        self.update_min_node(node.clone());
+
+        if let Some(tail_node) = self.tail.take() {
+            node.borrow_mut().prev = Some(Rc::downgrade(&tail_node));
+            tail_node.borrow_mut().sibling = Some(node.clone());
+            self.tail = Some(node);
+        } else {
+            self.head = Some(node.clone());
+            self.tail = Some(node);
+        }
+        self.len += 1;
     }
 
     fn link(child_root: Rc<RefCell<FibonacciNode<T>>>, parent_root: Rc<RefCell<FibonacciNode<T>>>) {
@@ -235,164 +235,121 @@ impl<T: Ord> FibonacciHeap<T> {
             let mut child_mut = child_root.borrow_mut();
             child_mut.parent = Some(Rc::downgrade(&parent_root));
             child_mut.marked = false;
+            child_mut.sibling = parent_root.borrow().child.clone();
+            if let Some(next) = &child_mut.sibling {
+                next.borrow_mut().prev = Some(Rc::downgrade(&child_root));
+            }
+            child_mut.prev = None;
         }
-        let parent_child = parent_root.borrow_mut().child.take();
-        child_root.borrow_mut().sibling = parent_child;
         parent_root.borrow_mut().child = Some(child_root);
         parent_root.borrow_mut().degree += 1;
     }
 
-    fn prepend_root_list(
-        first: Option<Rc<RefCell<FibonacciNode<T>>>>,
-        second: Option<Rc<RefCell<FibonacciNode<T>>>>,
-    ) -> Option<Rc<RefCell<FibonacciNode<T>>>> {
-        match (first, second) {
-            (None, None) => None,
-            (Some(head), None) | (None, Some(head)) => Some(head),
-            (Some(first_head), Some(second_head)) => {
-                let mut tail = second_head.clone();
-                loop {
-                    let next = tail.borrow().sibling.clone();
-                    if let Some(next_node) = next {
-                        tail = next_node;
-                    } else {
-                        break;
-                    }
-                }
-                tail.borrow_mut().sibling = Some(first_head);
-                Some(second_head)
-            }
-        }
-    }
-
-    fn roots_from_list(
-        mut head: Option<Rc<RefCell<FibonacciNode<T>>>>,
-    ) -> Vec<Rc<RefCell<FibonacciNode<T>>>> {
-        let mut roots = Vec::new();
-        while let Some(node) = head {
-            let next = node.borrow_mut().sibling.take();
-            node.borrow_mut().parent = None;
-            roots.push(node.clone());
-            head = next;
-        }
-        roots
-    }
-
-    fn list_from_roots(
-        roots: Vec<Rc<RefCell<FibonacciNode<T>>>>,
-    ) -> Option<Rc<RefCell<FibonacciNode<T>>>> {
-        let mut head: Option<Rc<RefCell<FibonacciNode<T>>>> = None;
-        let mut tail: Option<Rc<RefCell<FibonacciNode<T>>>> = None;
-
-        for node in roots {
-            node.borrow_mut().sibling = None;
-            if let Some(tail_node) = tail {
-                tail_node.borrow_mut().sibling = Some(node.clone());
-                tail = Some(node);
-            } else {
-                head = Some(node.clone());
-                tail = Some(node);
-            }
-        }
-
-        head
-    }
-
-    fn consolidate(
-        head: Option<Rc<RefCell<FibonacciNode<T>>>>,
-    ) -> Option<Rc<RefCell<FibonacciNode<T>>>> {
+    fn consolidate(&mut self) {
         let mut buckets: Vec<Option<Rc<RefCell<FibonacciNode<T>>>>> = Vec::new();
 
-        for root in Self::roots_from_list(head) {
-            let mut current = root;
+        let mut current = self.head.take();
+        self.tail = None;
+
+        while let Some(root) = current {
+            let next = root.borrow_mut().sibling.take();
+            root.borrow_mut().prev = None;
+            root.borrow_mut().parent = None;
+
+            let mut current_node = root;
             loop {
-                let degree = current.borrow().degree;
+                let degree = current_node.borrow().degree;
                 if buckets.len() <= degree {
                     buckets.resize_with(degree + 1, || None);
                 }
 
                 if let Some(other) = buckets[degree].take() {
-                    let (parent, child) = if current
-                        .borrow()
-                        .value
-                        .as_ref()
-                        .expect("node value should be present")
-                        <= other
-                            .borrow()
-                            .value
-                            .as_ref()
-                            .expect("node value should be present")
-                    {
-                        (current, other)
+                    let (parent, child) = if current_node.borrow().value < other.borrow().value {
+                        (current_node, other)
                     } else {
-                        (other, current)
+                        (other, current_node)
                     };
                     Self::link(child, parent.clone());
-                    current = parent;
+                    current_node = parent;
                 } else {
-                    buckets[degree] = Some(current);
+                    buckets[degree] = Some(current_node);
                     break;
                 }
             }
+            current = next;
         }
 
-        let roots: Vec<_> = buckets.into_iter().flatten().collect();
-        Self::list_from_roots(roots)
-    }
+        self.head = None;
+        self.tail = None;
+        self.min_node = None;
 
-    fn push_root(&mut self, node: Rc<RefCell<FibonacciNode<T>>>) {
-        {
-            let mut node_mut = node.borrow_mut();
-            node_mut.parent = None;
-            node_mut.marked = false;
-            node_mut.sibling = self.head.take();
-        }
-        self.head = Some(node);
-    }
-
-    fn detach_from_parent(
-        parent: &Rc<RefCell<FibonacciNode<T>>>,
-        child: &Rc<RefCell<FibonacciNode<T>>>,
-    ) {
-        let mut prev: Option<Rc<RefCell<FibonacciNode<T>>>> = None;
-        let mut current = parent.borrow().child.clone();
-
-        while let Some(node) = current {
-            if Rc::ptr_eq(&node, child) {
-                let next = node.borrow_mut().sibling.take();
-                if let Some(prev_node) = prev {
-                    prev_node.borrow_mut().sibling = next;
+        for root_opt in buckets {
+            if let Some(root) = root_opt {
+                self.update_min_node(root.clone());
+                if let Some(tail_node) = self.tail.take() {
+                    root.borrow_mut().prev = Some(Rc::downgrade(&tail_node));
+                    tail_node.borrow_mut().sibling = Some(root.clone());
+                    self.tail = Some(root);
                 } else {
-                    parent.borrow_mut().child = next;
+                    self.head = Some(root.clone());
+                    self.tail = Some(root);
                 }
-                let mut parent_mut = parent.borrow_mut();
-                parent_mut.degree = parent_mut.degree.saturating_sub(1);
-                break;
             }
+        }
+    }
 
-            prev = Some(node.clone());
-            current = node.borrow().sibling.clone();
+    fn detach_node(
+        head: &mut Option<Rc<RefCell<FibonacciNode<T>>>>,
+        tail: &mut Option<Rc<RefCell<FibonacciNode<T>>>>,
+        node: &Rc<RefCell<FibonacciNode<T>>>,
+    ) {
+        let next = node.borrow_mut().sibling.take();
+        let prev = node.borrow_mut().prev.take();
+
+        if let Some(next_node) = &next {
+            next_node.borrow_mut().prev = prev.clone();
+        } else {
+            *tail = prev.as_ref().and_then(|p| p.upgrade());
+        }
+
+        if let Some(prev_weak) = prev {
+            if let Some(prev_node) = prev_weak.upgrade() {
+                prev_node.borrow_mut().sibling = next;
+            }
+        } else {
+            *head = next;
         }
     }
 
     fn cut(&mut self, node: Rc<RefCell<FibonacciNode<T>>>, parent: Rc<RefCell<FibonacciNode<T>>>) {
-        Self::detach_from_parent(&parent, &node);
-        self.push_root(node);
+        {
+            let mut parent_mut = parent.borrow_mut();
+            Self::detach_node(&mut parent_mut.child, &mut None, &node);
+            parent_mut.degree = parent_mut.degree.saturating_sub(1);
+        }
+
+        node.borrow_mut().parent = None;
+        node.borrow_mut().marked = false;
+        
+        // Add to root list
+        if let Some(tail_node) = self.tail.take() {
+            node.borrow_mut().prev = Some(Rc::downgrade(&tail_node));
+            tail_node.borrow_mut().sibling = Some(node.clone());
+            self.tail = Some(node);
+        } else {
+            self.head = Some(node.clone());
+            self.tail = Some(node);
+        }
     }
 
     fn cascading_cut(&mut self, mut node: Rc<RefCell<FibonacciNode<T>>>) {
         loop {
-            let parent = {
-                let b = node.borrow();
-                b.parent.as_ref().and_then(|p| p.upgrade())
-            };
-
+            let parent = node.borrow().parent.as_ref().and_then(|p| p.upgrade());
             let Some(parent_rc) = parent else {
                 break;
             };
 
-            let was_marked = node.borrow().marked;
-            if !was_marked {
+            if !node.borrow().marked {
                 node.borrow_mut().marked = true;
                 break;
             }
@@ -402,95 +359,62 @@ impl<T: Ord> FibonacciHeap<T> {
         }
     }
 
-    fn remove_root(&mut self, target: &Rc<RefCell<FibonacciNode<T>>>) -> bool {
-        let mut prev: Option<Rc<RefCell<FibonacciNode<T>>>> = None;
-        let mut current = self.head.clone();
-
-        while let Some(node) = current {
-            if Rc::ptr_eq(&node, target) {
-                let next = node.borrow_mut().sibling.take();
-                if let Some(prev_node) = prev {
-                    prev_node.borrow_mut().sibling = next;
-                } else {
-                    self.head = next;
-                }
-                return true;
-            }
-
-            prev = Some(node.clone());
-            current = node.borrow().sibling.clone();
+    pub fn merge(&mut self, other: &mut Self) {
+        if other.is_empty() {
+            return;
         }
 
-        false
-    }
+        if self.is_empty() {
+            self.head = other.head.take();
+            self.tail = other.tail.take();
+            self.min_node = other.min_node.take();
+            self.len = other.len;
+            other.len = 0;
+            return;
+        }
 
-    pub fn merge(&mut self, other: &mut Self) {
-        let total_len = self.len + other.len;
-        let merged = Self::prepend_root_list(self.head.take(), other.head.take());
-        self.head = Self::consolidate(merged);
-        self.len = total_len;
+        if let Some(other_min) = &other.min_node {
+            self.update_min_node(other_min.clone());
+        }
+
+        let self_tail = self.tail.take().expect("self tail");
+        let other_head = other.head.take().expect("other head");
+
+        self_tail.borrow_mut().sibling = Some(other_head.clone());
+        other_head.borrow_mut().prev = Some(Rc::downgrade(&self_tail));
+        self.tail = other.tail.take();
+
+        self.len += other.len;
         other.len = 0;
+        other.min_node = None;
     }
 
     pub fn extract_min(&mut self) -> Option<T> {
-        let old_len = self.len;
-        if self.head.is_none() {
-            return None;
-        }
-
-        let mut min_node = self.head.as_ref().expect("head").clone();
-        let mut min_prev = None;
-
-        {
-            let mut current = min_node.borrow().sibling.clone();
-            let mut prev = Some(min_node.clone());
-
-            while let Some(node) = current {
-                if node
-                    .borrow()
-                    .value
-                    .as_ref()
-                    .expect("node value should be present")
-                    < min_node
-                        .borrow()
-                        .value
-                        .as_ref()
-                        .expect("node value should be present")
-                {
-                    min_node = node.clone();
-                    min_prev = prev.clone();
-                }
-                prev = Some(node.clone());
-                current = node.borrow().sibling.clone();
-            }
-        }
-
-        if let Some(prev) = min_prev {
-            prev.borrow_mut().sibling = min_node.borrow_mut().sibling.take();
-        } else {
-            self.head = min_node.borrow_mut().sibling.take();
-        }
+        let min_node = self.min_node.take()?;
+        Self::detach_node(&mut self.head, &mut self.tail, &min_node);
 
         let mut child = min_node.borrow_mut().child.take();
-        let mut new_head = None;
         while let Some(c) = child {
             let next = c.borrow_mut().sibling.take();
+            c.borrow_mut().prev = None;
             c.borrow_mut().parent = None;
-            c.borrow_mut().sibling = new_head;
-            new_head = Some(c.clone());
+            
+            // Add child to root list
+            if let Some(tail_node) = self.tail.take() {
+                c.borrow_mut().prev = Some(Rc::downgrade(&tail_node));
+                tail_node.borrow_mut().sibling = Some(c.clone());
+                self.tail = Some(c);
+            } else {
+                self.head = Some(c.clone());
+                self.tail = Some(c);
+            }
             child = next;
         }
 
-        let merged = Self::prepend_root_list(self.head.take(), new_head);
-        self.head = Self::consolidate(merged);
-        self.len = old_len.saturating_sub(1);
+        self.len = self.len.saturating_sub(1);
+        self.consolidate();
 
-        let removed_value = min_node
-            .borrow_mut()
-            .value
-            .take()
-            .expect("extracted node value should be present");
-        Some(removed_value)
+        Some(min_node.borrow_mut().value.take().expect("value"))
     }
 
     pub fn decrease_key(&mut self, handle: FibonacciNodeCursor<T>, new_value: T) {
@@ -500,23 +424,11 @@ impl<T: Ord> FibonacciHeap<T> {
 
         let node = handle.node;
         node.borrow_mut().value = Some(new_value);
+        self.update_min_node(node.clone());
 
-        let parent = {
-            let b = node.borrow();
-            b.parent.as_ref().and_then(|p| p.upgrade())
-        };
-
-        if let Some(parent_rc) = parent
-            && node
-                .borrow()
-                .value
-                .as_ref()
-                .expect("node value should be present")
-                < parent_rc
-                    .borrow()
-                    .value
-                    .as_ref()
-                    .expect("node value should be present")
+        let parent = node.borrow().parent.as_ref().and_then(|p| p.upgrade());
+        if let Some(parent_rc) = parent 
+            && node.borrow().value < parent_rc.borrow().value 
         {
             self.cut(node.clone(), parent_rc.clone());
             self.cascading_cut(parent_rc);
@@ -524,42 +436,53 @@ impl<T: Ord> FibonacciHeap<T> {
     }
 
     pub fn delete(&mut self, handle: FibonacciNodeCursor<T>) -> Option<T> {
-        let old_len = self.len;
         let target = handle.rc();
-
-        let parent = {
-            let b = target.borrow();
-            b.parent.as_ref().and_then(|p| p.upgrade())
-        };
+        let parent = target.borrow().parent.as_ref().and_then(|p| p.upgrade());
+        
         if let Some(parent_rc) = parent {
             self.cut(target.clone(), parent_rc.clone());
             self.cascading_cut(parent_rc);
         }
 
-        if !self.remove_root(&target) {
-            return None;
+        // Now target is a root.
+        // We need to find if it was the min_node.
+        let is_min = if let Some(min) = &self.min_node {
+            Rc::ptr_eq(min, &target)
+        } else {
+            false
+        };
+
+        if is_min {
+            return self.extract_min();
         }
 
+        Self::detach_node(&mut self.head, &mut self.tail, &target);
+        
         let mut child = target.borrow_mut().child.take();
-        let mut new_head = None;
         while let Some(c) = child {
             let next = c.borrow_mut().sibling.take();
+            c.borrow_mut().prev = None;
             c.borrow_mut().parent = None;
-            c.borrow_mut().sibling = new_head;
-            new_head = Some(c.clone());
+            
+            if let Some(tail_node) = self.tail.take() {
+                c.borrow_mut().prev = Some(Rc::downgrade(&tail_node));
+                tail_node.borrow_mut().sibling = Some(c.clone());
+                self.tail = Some(c);
+            } else {
+                self.head = Some(c.clone());
+                self.tail = Some(c);
+            }
             child = next;
         }
 
-        let merged = Self::prepend_root_list(self.head.take(), new_head);
-        self.head = Self::consolidate(merged);
-        self.len = old_len.saturating_sub(1);
+        self.len = self.len.saturating_sub(1);
+        // We don't strictly need to consolidate here in some definitions, 
+        // but it's often done or done on next extract_min.
+        // Actually, just updating min_node is necessary if we don't consolidate.
+        // But since we removed the min_node, we MUST re-scan for it or consolidate.
+        self.consolidate();
 
-        let removed_value = target
-            .borrow_mut()
-            .value
-            .take()
-            .expect("deleted node value should be present");
-        Some(removed_value)
+        Some(target.borrow_mut().value.take().expect("value"))
     }
 
     pub fn delete_value(&mut self, value: &T) -> Option<T> {
@@ -569,22 +492,15 @@ impl<T: Ord> FibonacciHeap<T> {
 }
 
 impl<T: Ord> PriorityQueue<T> for FibonacciHeap<T> {
-    type Cursor<'a>
-        = FibonacciNodeCursor<T>
-    where
-        Self: 'a;
-
-    type View<'a>
-        = FibonacciNodeView<T>
-    where
-        Self: 'a;
+    type Cursor<'a> = FibonacciNodeCursor<T> where Self: 'a;
+    type View<'a> = FibonacciNodeView<T> where Self: 'a;
 
     fn push(&mut self, value: T) {
-        Self::insert(self, value)
+        self.insert(value)
     }
 
     fn pop(&mut self) -> Option<T> {
-        Self::extract_min(self)
+        self.extract_min()
     }
 
     fn peek<'a>(&'a self) -> Option<Self::Cursor<'a>> {
@@ -599,19 +515,20 @@ impl<T: Ord> PriorityQueue<T> for FibonacciHeap<T> {
         cursor.node_view()
     }
 
-    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T>
-    where
-        T: 'a,
-    {
+    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T> where T: 'a {
         self.delete(cursor)
     }
 
+    fn merge(&mut self, other: &mut Self) {
+        self.merge(other)
+    }
+
     fn clear(&mut self) {
-        Self::clear(self)
+        self.clear()
     }
 
     fn len(&self) -> usize {
-        Self::len(self)
+        self.len
     }
 }
 
@@ -631,8 +548,8 @@ impl<T: Ord> ForestDiagnostics for FibonacciHeap<T> {
     }
 
     fn max_root_degree(&self) -> usize {
-        let mut current = self.head.clone();
         let mut max_degree = 0;
+        let mut current = self.head.clone();
         while let Some(node) = current {
             max_degree = max_degree.max(node.borrow().degree);
             current = node.borrow().sibling.clone();

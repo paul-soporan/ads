@@ -161,12 +161,13 @@ impl<T: Ord> BinomialHeap<T> {
         }
 
         while let Some(node) = stack.pop() {
-            if &node.borrow().value == value {
-                return Some(BinomialNodeCursor::from(node));
+            let node_borrow = node.borrow();
+            if &node_borrow.value == value {
+                return Some(BinomialNodeCursor::from(node.clone()));
             }
 
-            if &node.borrow().value < value {
-                let mut child = node.borrow().child.clone();
+            if &node_borrow.value < value {
+                let mut child = node_borrow.child.clone();
                 while let Some(c) = child {
                     stack.push(c.clone());
                     child = c.borrow().sibling.clone();
@@ -222,8 +223,8 @@ impl<T: Ord> BinomialHeap<T> {
         let mut tail: Option<Rc<RefCell<BinomialNode<T>>>> = None;
 
         while first.is_some() && second.is_some() {
-            let n1 = first.as_ref().expect("first node").clone();
-            let n2 = second.as_ref().expect("second node").clone();
+            let n1 = first.as_ref().unwrap().clone();
+            let n2 = second.as_ref().unwrap().clone();
 
             let take_first = n1.borrow().degree <= n2.borrow().degree;
             let next_node = if take_first {
@@ -275,14 +276,9 @@ impl<T: Ord> BinomialHeap<T> {
         }
 
         let mut real_head = Self::merge_root_lists(first, second);
-        if real_head.is_none() {
-            self.len = 0;
-            other.len = 0;
-            return;
-        }
-
+        
         let mut prev = None;
-        let mut x = real_head.as_ref().expect("head").clone();
+        let mut x = real_head.as_ref().unwrap().clone();
         let mut next = x.borrow().sibling.clone();
 
         while let Some(n) = next {
@@ -316,12 +312,11 @@ impl<T: Ord> BinomialHeap<T> {
     }
 
     pub fn extract_min(&mut self) -> Option<T> {
-        let old_len = self.len;
         if self.head.is_none() {
             return None;
         }
 
-        let mut min_node = self.head.as_ref().expect("head").clone();
+        let mut min_node = self.head.as_ref().unwrap().clone();
         let mut min_prev = None;
 
         {
@@ -358,15 +353,14 @@ impl<T: Ord> BinomialHeap<T> {
             head: new_head,
             len: 0,
         };
+        let old_len = self.len;
         self.merge(&mut child_heap);
         self.len = old_len.saturating_sub(1);
 
-        Some(
-            Rc::try_unwrap(min_node)
-                .unwrap_or_else(|_| unreachable!("extracted node should be uniquely owned"))
-                .into_inner()
-                .value,
-        )
+        Rc::try_unwrap(min_node)
+            .map_err(|_| "Rc::try_unwrap failed in extract_min")
+            .ok()
+            .map(|cell| cell.into_inner().value)
     }
 
     pub fn decrease_key(&mut self, handle: BinomialNodeCursor<T>, new_value: T) {
@@ -401,8 +395,8 @@ impl<T: Ord> BinomialHeap<T> {
     }
 
     pub fn delete(&mut self, handle: BinomialNodeCursor<T>) -> Option<T> {
-        let old_len = self.len;
         let mut current = handle.rc();
+        drop(handle);
 
         loop {
             let parent = {
@@ -456,15 +450,14 @@ impl<T: Ord> BinomialHeap<T> {
             head: new_head,
             len: 0,
         };
+        let old_len = self.len;
         self.merge(&mut child_heap);
         self.len = old_len.saturating_sub(1);
 
-        Some(
-            Rc::try_unwrap(target)
-                .unwrap_or_else(|_| unreachable!("deleted node should be uniquely owned"))
-                .into_inner()
-                .value,
-        )
+        Rc::try_unwrap(target)
+            .map_err(|_| "Rc::try_unwrap failed in delete")
+            .ok()
+            .map(|cell| cell.into_inner().value)
     }
 
     pub fn delete_value(&mut self, value: &T) -> Option<T> {
@@ -474,22 +467,15 @@ impl<T: Ord> BinomialHeap<T> {
 }
 
 impl<T: Ord> PriorityQueue<T> for BinomialHeap<T> {
-    type Cursor<'a>
-        = BinomialNodeCursor<T>
-    where
-        Self: 'a;
-
-    type View<'a>
-        = BinomialNodeView<T>
-    where
-        Self: 'a;
+    type Cursor<'a> = BinomialNodeCursor<T> where Self: 'a;
+    type View<'a> = BinomialNodeView<T> where Self: 'a;
 
     fn push(&mut self, value: T) {
-        Self::insert(self, value)
+        self.insert(value)
     }
 
     fn pop(&mut self) -> Option<T> {
-        Self::extract_min(self)
+        self.extract_min()
     }
 
     fn peek<'a>(&'a self) -> Option<Self::Cursor<'a>> {
@@ -504,19 +490,20 @@ impl<T: Ord> PriorityQueue<T> for BinomialHeap<T> {
         cursor.node_view()
     }
 
-    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T>
-    where
-        T: 'a,
-    {
+    fn remove_cursor<'a>(&mut self, cursor: Self::Cursor<'a>) -> Option<T> where T: 'a {
         self.delete(cursor)
     }
 
+    fn merge(&mut self, other: &mut Self) {
+        Self::merge(self, other)
+    }
+
     fn clear(&mut self) {
-        Self::clear(self)
+        self.clear()
     }
 
     fn len(&self) -> usize {
-        Self::len(self)
+        self.len
     }
 }
 

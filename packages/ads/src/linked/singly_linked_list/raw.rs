@@ -1,7 +1,12 @@
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::traits::core::Sequence;
+use crate::traits::core::{Sequence, SequenceMutGuard};
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics;
 
 #[derive(Debug)]
 struct Node<T> {
@@ -14,24 +19,8 @@ pub struct SinglyLinkedList<T> {
     head: *mut Node<T>,
     tail: *mut Node<T>,
     len: usize,
-}
-
-#[derive(Clone, Copy)]
-pub struct SinglyCursor<'a, T> {
-    index: usize,
-    node: *const Node<T>,
-    marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> SinglyCursor<'a, T> {
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    pub fn value(&self) -> &'a T {
-        // SAFETY: Cursor only exposes immutable access tied to list borrow in cursor_at.
-        unsafe { &(*self.node).value }
-    }
+    #[cfg(any(test, feature = "bench"))]
+    walk_steps: AtomicUsize,
 }
 
 impl<T> Default for SinglyLinkedList<T> {
@@ -40,7 +29,67 @@ impl<T> Default for SinglyLinkedList<T> {
             head: ptr::null_mut(),
             tail: ptr::null_mut(),
             len: 0,
+            #[cfg(any(test, feature = "bench"))]
+            walk_steps: AtomicUsize::new(0),
         }
+    }
+}
+
+pub struct SinglyCursor<'a, T> {
+    index: usize,
+    list: &'a SinglyLinkedList<T>,
+}
+
+pub struct CursorValue<T>(T);
+
+pub struct SinglyMutView<'a, T> {
+    node: *mut Node<T>,
+    _marker: PhantomData<&'a mut SinglyLinkedList<T>>,
+}
+
+impl<T> Deref for CursorValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, T> SequenceMutGuard<T> for SinglyMutView<'a, T> {
+    fn with_mut<R, F>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        unsafe { f(&mut (*self.node).value) }
+    }
+}
+
+impl<'a, T> Clone for SinglyCursor<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> Copy for SinglyCursor<'a, T> {}
+
+impl<'a, T> crate::traits::core::SequenceCursor for SinglyCursor<'a, T> {
+    fn index(&self) -> usize {
+        self.index
+    }
+}
+
+impl<'a, T> SinglyCursor<'a, T> {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn value(&self) -> CursorValue<T>
+    where
+        T: Clone,
+    {
+        let node = self.list.node_at(self.index);
+        assert!(!node.is_null(), "cursor node should be live");
+        unsafe { CursorValue((*node).value.clone()) }
     }
 }
 
@@ -49,14 +98,15 @@ impl<T> SinglyLinkedList<T> {
         Self::default()
     }
 
-    fn node_at_ptr(&self, index: usize) -> *mut Node<T> {
+    fn node_at(&self, index: usize) -> *mut Node<T> {
         if index >= self.len {
             return ptr::null_mut();
         }
 
         let mut current = self.head;
         for _ in 0..index {
-            // SAFETY: Traversal only follows links of nodes currently owned by the list.
+            #[cfg(any(test, feature = "bench"))]
+            self.walk_steps.fetch_add(1, Ordering::Relaxed);
             unsafe {
                 current = (*current).next;
             }
@@ -67,74 +117,69 @@ impl<T> SinglyLinkedList<T> {
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: self.head,
-            marker: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
 
 pub struct Iter<'a, T> {
     next: *const Node<T>,
-    marker: PhantomData<&'a T>,
+    _marker: PhantomData<&'a SinglyLinkedList<T>>,
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
+impl<'a, T> Iterator for Iter<'a, T>
+where
+    T: Clone,
+{
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next.is_null() {
             return None;
         }
 
-        // SAFETY: The iterator is created from an immutable borrow of the list.
         unsafe {
-            let node = &*self.next;
-            self.next = node.next;
-            Some(&node.value)
+            let current = &*self.next;
+            let value = current.value.clone();
+            self.next = current.next;
+            Some(value)
         }
     }
 }
 
 impl<T> Sequence<T> for SinglyLinkedList<T> {
-    type Cursor<'a>
-        = SinglyCursor<'a, T>
-    where
-        Self: 'a;
-
-    type MutView<'a>
-        = &'a mut T
-    where
-        Self: 'a,
-        T: 'a;
+    type Cursor<'a> = SinglyCursor<'a, T> where Self: 'a;
+    type MutView<'a> = SinglyMutView<'a, T> where Self: 'a, T: 'a;
 
     fn push_front(&mut self, value: T) {
-        let node = Box::into_raw(Box::new(Node {
+        let new_node = Box::into_raw(Box::new(Node {
             value,
             next: self.head,
         }));
 
-        self.head = node;
         if self.tail.is_null() {
-            self.tail = node;
+            self.tail = new_node;
         }
+
+        self.head = new_node;
         self.len += 1;
     }
 
     fn push_back(&mut self, value: T) {
-        let node = Box::into_raw(Box::new(Node {
+        let new_node = Box::into_raw(Box::new(Node {
             value,
             next: ptr::null_mut(),
         }));
 
-        if self.tail.is_null() {
-            self.head = node;
-            self.tail = node;
-        } else {
-            // SAFETY: tail is non-null and points to a node owned by this list.
+        if !self.tail.is_null() {
             unsafe {
-                (*self.tail).next = node;
+                (*self.tail).next = new_node;
             }
-            self.tail = node;
+        } else {
+            self.head = new_node;
         }
+
+        self.tail = new_node;
         self.len += 1;
     }
 
@@ -143,13 +188,13 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
             return None;
         }
 
-        // SAFETY: head points to a node allocated by Box::into_raw in this list.
+        let old_head = self.head;
         unsafe {
-            let old_head = self.head;
             self.head = (*old_head).next;
             if self.head.is_null() {
                 self.tail = ptr::null_mut();
             }
+
             self.len -= 1;
             let boxed = Box::from_raw(old_head);
             Some(boxed.value)
@@ -157,24 +202,26 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
     }
 
     fn pop_back(&mut self) -> Option<T> {
-        if self.head.is_null() {
+        if self.len == 0 {
             return None;
         }
 
-        if self.head == self.tail {
+        if self.len == 1 {
             return self.pop_front();
         }
 
-        // SAFETY: head/tail are valid and list has at least two elements.
+        let mut current = self.head;
         unsafe {
-            let mut prev = self.head;
-            while (*prev).next != self.tail {
-                prev = (*prev).next;
+            while (*current).next != self.tail {
+                #[cfg(any(test, feature = "bench"))]
+                self.walk_steps.fetch_add(1, Ordering::Relaxed);
+                current = (*current).next;
             }
 
             let old_tail = self.tail;
-            self.tail = prev;
-            (*self.tail).next = ptr::null_mut();
+            self.tail = current;
+            (*current).next = ptr::null_mut();
+
             self.len -= 1;
             let boxed = Box::from_raw(old_tail);
             Some(boxed.value)
@@ -182,24 +229,21 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
     }
 
     fn cursor_at<'a>(&'a self, index: usize) -> Option<Self::Cursor<'a>> {
-        let node = self.node_at_ptr(index);
-        if node.is_null() {
+        if index >= self.len {
             return None;
         }
-        Some(SinglyCursor {
-            index,
-            node,
-            marker: PhantomData,
-        })
+        Some(SinglyCursor { index, list: self })
     }
 
     fn get_mut<'a>(&'a mut self, index: usize) -> Option<Self::MutView<'a>> {
-        let node = self.node_at_ptr(index);
+        let node = self.node_at(index);
         if node.is_null() {
             return None;
         }
-        // SAFETY: Mutable borrow of self guarantees exclusive access.
-        unsafe { Some(&mut (*node).value) }
+        Some(SinglyMutView {
+            node,
+            _marker: PhantomData,
+        })
     }
 
     fn clear(&mut self) {
@@ -208,6 +252,13 @@ impl<T> Sequence<T> for SinglyLinkedList<T> {
 
     fn len(&self) -> usize {
         self.len
+    }
+}
+
+#[cfg(any(test, feature = "bench"))]
+impl<T> SequenceDiagnostics for SinglyLinkedList<T> {
+    fn walk_steps(&self) -> usize {
+        self.walk_steps.load(Ordering::Relaxed)
     }
 }
 

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { assignComparisonColors, type ComparisonColorMap } from "./colorManager";
 import { loadBenchmarkDataset } from "./load";
 import type {
   CriterionRecord,
@@ -19,12 +20,15 @@ interface DashboardStore {
   dataset: NormalizedBenchmarkDataset | null;
   filters: DashboardFilters;
   selectedImplementations: string[];
+  hoveredImplementation: string | null;
+  comparisonColors: ComparisonColorMap;
   loadData: () => Promise<void>;
   setFilter: <K extends keyof DashboardFilters>(key: K, value: DashboardFilters[K]) => void;
   setFilters: (next: DashboardFilters) => void;
   clearFilters: () => void;
   toggleImplementation: (implementation: string) => void;
   setSelectedImplementations: (implementations: string[]) => void;
+  setHoveredImplementation: (implementation: string | null) => void;
   resetComparison: () => void;
 }
 
@@ -200,6 +204,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   dataset: null,
   filters: defaultFilters,
   selectedImplementations: [],
+  hoveredImplementation: null,
+  comparisonColors: {},
 
   async loadData() {
     const { status } = get();
@@ -281,8 +287,10 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
     set((state) => {
       const selected = state.selectedImplementations;
       if (selected.includes(implementation)) {
+        const nextSelected = selected.filter((item) => item !== implementation);
         return {
-          selectedImplementations: selected.filter((item) => item !== implementation),
+          selectedImplementations: nextSelected,
+          comparisonColors: assignComparisonColors(state.comparisonColors, nextSelected),
         };
       }
 
@@ -290,8 +298,10 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         return state;
       }
 
+      const nextSelected = [...selected, implementation];
       return {
-        selectedImplementations: [...selected, implementation],
+        selectedImplementations: nextSelected,
+        comparisonColors: assignComparisonColors(state.comparisonColors, nextSelected),
       };
     });
   },
@@ -307,12 +317,25 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         return state;
       }
 
-      return { selectedImplementations: normalized };
+      return {
+        selectedImplementations: normalized,
+        comparisonColors: assignComparisonColors(state.comparisonColors, normalized),
+      };
+    });
+  },
+
+  setHoveredImplementation(implementation) {
+    set((state) => {
+      if (state.hoveredImplementation === implementation) {
+        return state;
+      }
+
+      return { hoveredImplementation: implementation };
     });
   },
 
   resetComparison() {
-    set({ selectedImplementations: [] });
+    set({ selectedImplementations: [], comparisonColors: {}, hoveredImplementation: null });
   },
 }));
 

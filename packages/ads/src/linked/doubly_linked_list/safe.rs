@@ -2,8 +2,15 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::traits::core::{Sequence, SequenceMutGuard};
+use crate::traits::core::{Sequence, SequenceMutGuard, SequenceCursor};
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics;
+
+#[cfg(any(test, feature = "bench"))]
+use crate::traits::diagnostics::SequenceDiagnostics as SequenceDiagnosticsTrait;
 
 type Link<T> = Option<Rc<RefCell<Node<T>>>>;
 type WeakLink<T> = Option<Weak<RefCell<Node<T>>>>;
@@ -20,6 +27,8 @@ pub struct DoublyLinkedList<T> {
     head: Link<T>,
     tail: WeakLink<T>,
     len: usize,
+    #[cfg(any(test, feature = "bench"))]
+    walk_steps: AtomicUsize,
 }
 
 impl<T> Default for DoublyLinkedList<T> {
@@ -28,15 +37,24 @@ impl<T> Default for DoublyLinkedList<T> {
             head: None,
             tail: None,
             len: 0,
+            #[cfg(any(test, feature = "bench"))]
+            walk_steps: AtomicUsize::new(0),
         }
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct DoublyCursor<'a, T> {
     index: usize,
     list: &'a DoublyLinkedList<T>,
 }
+
+impl<'a, T> Clone for DoublyCursor<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> Copy for DoublyCursor<'a, T> {}
 
 pub struct CursorValue<T>(T);
 
@@ -59,6 +77,12 @@ impl<T> SequenceMutGuard<T> for DoublyMutView<T> {
     {
         let mut node = self.node.borrow_mut();
         f(&mut node.value)
+    }
+}
+
+impl<'a, T> SequenceCursor for DoublyCursor<'a, T> {
+    fn index(&self) -> usize {
+        self.index
     }
 }
 
@@ -96,6 +120,8 @@ impl<T> DoublyLinkedList<T> {
         if index <= self.len / 2 {
             let mut current = self.head.as_ref()?.clone();
             for _ in 0..index {
+                #[cfg(any(test, feature = "bench"))]
+                self.walk_steps.fetch_add(1, Ordering::Relaxed);
                 let next = current.borrow().next.as_ref()?.clone();
                 current = next;
             }
@@ -103,6 +129,8 @@ impl<T> DoublyLinkedList<T> {
         } else {
             let mut current = self.tail_node()?;
             for _ in 0..(self.len - 1 - index) {
+                #[cfg(any(test, feature = "bench"))]
+                self.walk_steps.fetch_add(1, Ordering::Relaxed);
                 let prev = current.borrow().prev.as_ref()?.upgrade()?;
                 current = prev;
             }
@@ -254,6 +282,13 @@ impl<T> Sequence<T> for DoublyLinkedList<T> {
 
     fn len(&self) -> usize {
         self.len
+    }
+}
+
+#[cfg(any(test, feature = "bench"))]
+impl<T> SequenceDiagnostics for DoublyLinkedList<T> {
+    fn walk_steps(&self) -> usize {
+        self.walk_steps.load(Ordering::Relaxed)
     }
 }
 

@@ -67,10 +67,16 @@ pub type BtSafeDeg64 = ads::trees::b_tree::safe::BTree<u64, u64, 64>;
 pub type BtRawDeg64 = ads::trees::b_tree::raw::BTree<u64, u64, 64>;
 pub type BtArenaDeg64 = ads::trees::b_tree::arena::BTree<u64, u64, 64>;
 
-pub type DsSafe = ads::contiguous::disjoint_set::safe::DisjointSet<u64>;
-pub type DsRaw = ads::contiguous::disjoint_set::raw::DisjointSet<u64>;
-pub type AdsHeap = ads::contiguous::binary_heap::safe::BinaryHeap<u64>;
-pub type StdMinHeap = StdBinaryHeap<Reverse<u64>>;
+pub type DsuSafe = ads::contiguous::disjoint_set::safe::DisjointSet<u64>;
+pub type DsuRaw = ads::contiguous::disjoint_set::raw::DisjointSet<u64>;
+pub type DsuArena = ads::contiguous::disjoint_set::arena::DisjointSet<u64>;
+
+pub type BinarySafe = ads::contiguous::binary_heap::safe::BinaryHeap<u64>;
+pub type BinaryRaw = ads::contiguous::binary_heap::raw::BinaryHeap<u64>;
+pub type BinaryArena = ads::contiguous::binary_heap::arena::BinaryHeap<u64>;
+pub type BinomialArena = ads::forests::binomial_heap::arena::BinomialHeap<u64>;
+pub type FibonacciArena = ads::forests::fibonacci_heap::arena::FibonacciHeap<u64>;
+pub type StdBinaryHeapMin = StdBinaryHeap<Reverse<u64>>;
 
 pub type StrBstSafe = ads::trees::binary_search_tree::safe::BinarySearchTree<String, usize>;
 pub type StrBstRaw = ads::trees::binary_search_tree::raw::BinarySearchTree<String, usize>;
@@ -520,7 +526,25 @@ pub trait BenchPriorityQueue {
     fn pop_value(&mut self) -> Option<u64>;
 }
 
-impl BenchPriorityQueue for AdsHeap {
+macro_rules! impl_ads_bench_pq {
+    ($ty:ty) => {
+        impl BenchPriorityQueue for $ty {
+            fn new() -> Self {
+                Self::new()
+            }
+
+            fn push_value(&mut self, value: u64) {
+                AdsPriorityQueue::push(self, value);
+            }
+
+            fn pop_value(&mut self) -> Option<u64> {
+                AdsPriorityQueue::pop(self)
+            }
+        }
+    };
+}
+
+impl BenchPriorityQueue for BinarySafe {
     fn new() -> Self {
         Self::new()
     }
@@ -534,7 +558,12 @@ impl BenchPriorityQueue for AdsHeap {
     }
 }
 
-impl BenchPriorityQueue for StdMinHeap {
+impl_ads_bench_pq!(BinaryRaw);
+impl_ads_bench_pq!(BinaryArena);
+impl_ads_bench_pq!(BinomialArena);
+impl_ads_bench_pq!(FibonacciArena);
+
+impl BenchPriorityQueue for StdBinaryHeapMin {
     fn new() -> Self {
         Self::new()
     }
@@ -556,7 +585,7 @@ pub trait BenchDisjointSet {
     fn find_value(&mut self, value: &u64) -> bool;
 }
 
-impl BenchDisjointSet for DsSafe {
+impl BenchDisjointSet for DsuSafe {
     fn new() -> Self {
         Self::new()
     }
@@ -578,7 +607,29 @@ impl BenchDisjointSet for DsSafe {
     }
 }
 
-impl BenchDisjointSet for DsRaw {
+impl BenchDisjointSet for DsuRaw {
+    fn new() -> Self {
+        Self::new()
+    }
+
+    fn make_set_value(&mut self, value: u64) {
+        let _ = AdsDisjointSet::make_set(self, value);
+    }
+
+    fn union_values(&mut self, left: &u64, right: &u64) -> bool {
+        AdsDisjointSet::union(self, left, right)
+    }
+
+    fn same_set_values(&mut self, left: &u64, right: &u64) -> bool {
+        AdsDisjointSet::same_set(self, left, right)
+    }
+
+    fn find_value(&mut self, value: &u64) -> bool {
+        AdsDisjointSet::find(self, value).is_some()
+    }
+}
+
+impl BenchDisjointSet for DsuArena {
     fn new() -> Self {
         Self::new()
     }
@@ -831,6 +882,25 @@ pub fn heap_push_pop_bench<P: BenchPriorityQueue>(input: &[u64]) -> usize {
     let mut checksum = 0usize;
     while let Some(value) = pq.pop_value() {
         checksum = checksum.wrapping_add(value as usize);
+    }
+    black_box(checksum)
+}
+
+pub fn dsu_workload<D: BenchDisjointSet>(size: usize) -> usize {
+    let mut ds = D::new();
+    for i in 0..size {
+        ds.make_set_value(i as u64);
+    }
+
+    for i in 0..(size / 2) {
+        ds.union_values(&(i as u64), &((i + size / 2) as u64));
+    }
+
+    let mut checksum = 0usize;
+    for i in 0..size {
+        if ds.same_set_values(&(i as u64), &0u64) {
+            checksum = checksum.wrapping_add(1);
+        }
     }
     black_box(checksum)
 }
