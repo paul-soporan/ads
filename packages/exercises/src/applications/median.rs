@@ -1,7 +1,9 @@
-use ads::RedBlackTree;
+use ads::trees::red_black_tree::safe::RedBlackTree;
 use ratatui::prelude::{Color, Line, Span, Style, Text};
 
-use crate::applications::{CommandApplication, CommandApplicationLayout, output_lines_to_text, parse_command_parts};
+use crate::applications::{
+    CommandApplication, CommandApplicationLayout, output_lines_to_text, parse_command_parts,
+};
 use crate::render::render_rb_tree_text;
 use crate::types::StatusMessage;
 
@@ -40,7 +42,7 @@ impl MedianCommand {
 }
 
 pub struct MedianStreamState {
-    pub tree: RedBlackTree<i32>,
+    pub tree: RedBlackTree<i32, ()>,
     pub output: Vec<String>,
     pub input: String,
 }
@@ -58,13 +60,13 @@ impl MedianStreamState {
         match MedianCommand::parse(raw) {
             Err(e) => StatusMessage::error(e),
             Ok(MedianCommand::Add(x)) => {
-                self.tree.insert(x);
+                self.tree.insert_entry(x, ());
                 StatusMessage::info(format!("Inserted {x}. Size: {}", self.tree.size()))
             }
             Ok(MedianCommand::Remove(x)) => {
-                let existed = self.tree.search(&x).is_some();
+                let existed = self.tree.cursor(&x).is_some();
                 if existed {
-                    self.tree.delete_value(&x);
+                    self.tree.remove_key(&x);
                     StatusMessage::info(format!("Removed {x}. Size: {}", self.tree.size()))
                 } else {
                     StatusMessage::error(format!("{x} not found in stream."))
@@ -78,7 +80,7 @@ impl MedianStreamState {
                     let rank = (n - 1) / 2;
                     match self.tree.select(rank) {
                         Some(handle) => {
-                            let median = *handle.value();
+                            let median = *handle.key();
                             self.output.push(median.to_string());
                             StatusMessage::info(format!("Median: {median}"))
                         }
@@ -101,7 +103,7 @@ impl MedianStreamState {
             let rank = (n - 1) / 2;
             self.tree
                 .select(rank)
-                .map(|h| h.value().to_string())
+                .map(|h| h.key().to_string())
                 .unwrap_or_else(|| "?".to_string())
         };
         Text::from(vec![
@@ -154,6 +156,14 @@ impl CommandApplication for MedianStreamState {
     }
 
     fn layout(&self) -> CommandApplicationLayout {
-        CommandApplicationLayout::new(62, 6, 6, "Output", "Command Input", "Stats", "Order-Statistic Tree")
+        CommandApplicationLayout::new(
+            62,
+            6,
+            6,
+            "Output",
+            "Command Input",
+            "Stats",
+            "Order-Statistic Tree",
+        )
     }
 }

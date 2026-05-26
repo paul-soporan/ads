@@ -1,14 +1,15 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
-use ads::{DisjointSet, DisjointSetHandle, RedBlackTree};
+use ads::contiguous::disjoint_set::safe::DisjointSet;
+use ads::trees::red_black_tree::safe::RedBlackTree;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 
 use crate::applications::{CommandApplication, CommandApplicationLayout, parse_command_parts};
 use crate::types::StatusMessage;
 
 struct ComponentData {
-    tree: RedBlackTree<i64>,
+    tree: RedBlackTree<i64, ()>,
 }
 
 impl ComponentData {
@@ -19,14 +20,14 @@ impl ComponentData {
     }
 
     fn min_val(&self) -> Option<i64> {
-        self.tree.min().map(|v| *v.value())
+        self.tree.min_cursor().map(|v| *v.key())
     }
 
     fn kth_val(&self, k: usize) -> Option<i64> {
         if k == 0 {
             return None;
         }
-        self.tree.select(k - 1).map(|v| *v.value())
+        self.tree.select(k - 1).map(|v| *v.key())
     }
 
     fn size(&self) -> usize {
@@ -136,7 +137,6 @@ impl NetworkCommand {
 /// A lazy-deletion min-heap tracks the global minimum across all components.
 pub struct NetworkValueQueryState {
     ds: DisjointSet<usize>,
-    handles: Vec<DisjointSetHandle<usize>>,
 
     /// Keyed by the 0-based index of the component root node.
     component_data: HashMap<usize, ComponentData>,
@@ -154,7 +154,6 @@ impl NetworkValueQueryState {
     pub fn new() -> Self {
         Self {
             ds: DisjointSet::new(),
-            handles: Vec::new(),
             component_data: HashMap::new(),
             global_min_heap: BinaryHeap::new(),
             n: 0,
@@ -183,20 +182,27 @@ impl NetworkValueQueryState {
         Ok(())
     }
 
+    fn root_value_for_index(&mut self, index: usize) -> Option<usize> {
+        let root = self.ds.find(&index)?;
+        self.ds.root_value(root)
+    }
+
+    fn component_size(&self, root: usize) -> Option<usize> {
+        self.component_data.get(&root).map(ComponentData::size)
+    }
+
     fn apply(&mut self, cmd: NetworkCommand) -> StatusMessage {
         match cmd {
             NetworkCommand::Init(n, values) => {
                 self.ds = DisjointSet::new();
-                self.handles.clear();
                 self.component_data.clear();
                 self.global_min_heap = BinaryHeap::new();
                 self.n = n;
 
                 for (i, &val) in values.iter().enumerate() {
-                    let handle = self.ds.make_set(i);
-                    self.handles.push(handle);
+                    self.ds.make_set(i);
                     let mut data = ComponentData::new();
-                    data.tree.insert(val);
+                    data.tree.insert_entry(val, ());
                     self.global_min_heap.push(Reverse((val, i)));
                     self.component_data.insert(i, data);
                 }
@@ -214,8 +220,12 @@ impl NetworkValueQueryState {
                 let x0 = x - 1;
                 let y0 = y - 1;
 
-                let root_x = *self.ds.find(&self.handles[x0]).value();
-                let root_y = *self.ds.find(&self.handles[y0]).value();
+                let Some(root_x) = self.root_value_for_index(x0) else {
+                    return StatusMessage::error("Could not resolve component for x.");
+                };
+                let Some(root_y) = self.root_value_for_index(y0) else {
+                    return StatusMessage::error("Could not resolve component for y.");
+                };
 
                 if root_x == root_y {
                     return StatusMessage::info(format!(
@@ -223,34 +233,54 @@ impl NetworkValueQueryState {
                     ));
                 }
 
-                let size_x = self.component_data[&root_x].size();
-                let size_y = self.component_data[&root_y].size();
+                let Some(size_x) = self.component_size(root_x) else {
+                    return StatusMessage::error("Component bookkeeping mismatch for x root.");
+                };
+                let Some(size_y) = self.component_size(root_y) else {
+                    return StatusMessage::error("Component bookkeeping mismatch for y root.");
+                };
 
-                self.ds.union(&self.handles[x0], &self.handles[y0]);
-                let new_root = *self.ds.find(&self.handles[x0]).value();
+                if !self.ds.union(&x0, &y0) {
+                    return StatusMessage::error("Union failed unexpectedly.");
+                }
+                let Some(new_root) = self.root_value_for_index(x0) else {
+                    return StatusMessage::error("Could not resolve merged component root.");
+                };
                 let old_root = if new_root == root_x { root_y } else { root_x };
 
                 let new_root_size = if new_root == root_x { size_x } else { size_y };
                 let old_root_size = if new_root == root_x { size_y } else { size_x };
 
                 if old_root_size <= new_root_size {
-                    let mut old_tree = self.component_data.remove(&old_root).unwrap().tree;
-                    let new_data = self.component_data.get_mut(&new_root).unwrap();
-                    while let Some(view) = old_tree.min() {
-                        let val = old_tree.delete(view).unwrap();
-                        new_data.tree.insert(val);
+                    let Some(mut old_tree) = self.component_data.remove(&old_root).map(|d| d.tree)
+                    else {
+                        return StatusMessage::error("Missing old component during merge.");
+                    };
+                    let Some(new_data) = self.component_data.get_mut(&new_root) else {
+                        return StatusMessage::error("Missing target component during merge.");
+                    };
+                    while let Some(val) = old_tree.min_cursor().map(|view| *view.key()) {
+                        let _ = old_tree.remove_key(&val);
+                        new_data.tree.insert_entry(val, ());
                     }
                 } else {
-                    let mut smaller_tree = self.component_data.remove(&new_root).unwrap().tree;
-                    let mut larger_data = self.component_data.remove(&old_root).unwrap();
-                    while let Some(view) = smaller_tree.min() {
-                        let val = smaller_tree.delete(view).unwrap();
-                        larger_data.tree.insert(val);
+                    let Some(mut smaller_tree) =
+                        self.component_data.remove(&new_root).map(|d| d.tree)
+                    else {
+                        return StatusMessage::error("Missing smaller component during merge.");
+                    };
+                    let Some(mut larger_data) = self.component_data.remove(&old_root) else {
+                        return StatusMessage::error("Missing larger component during merge.");
+                    };
+                    while let Some(val) = smaller_tree.min_cursor().map(|view| *view.key()) {
+                        let _ = smaller_tree.remove_key(&val);
+                        larger_data.tree.insert_entry(val, ());
                     }
                     self.component_data.insert(new_root, larger_data);
                 }
 
-                if let Some(min_val) = self.component_data[&new_root].min_val() {
+                if let Some(min_val) = self.component_data.get(&new_root).and_then(ComponentData::min_val)
+                {
                     self.global_min_heap.push(Reverse((min_val, new_root)));
                 }
 
@@ -261,10 +291,14 @@ impl NetworkValueQueryState {
                 if let Err(e) = self.check_node(x) {
                     return e;
                 }
-                let root = *self.ds.find(&self.handles[x - 1]).value();
-                let data = self.component_data.get_mut(&root).unwrap();
+                let Some(root) = self.root_value_for_index(x - 1) else {
+                    return StatusMessage::error("Could not resolve component root.");
+                };
+                let Some(data) = self.component_data.get_mut(&root) else {
+                    return StatusMessage::error("Component bookkeeping mismatch for insert.");
+                };
                 let old_min = data.min_val();
-                data.tree.insert(v);
+                data.tree.insert_entry(v, ());
 
                 let is_new_min = old_min.is_none_or(|m| v <= m);
                 if is_new_min {
@@ -278,8 +312,10 @@ impl NetworkValueQueryState {
                 if let Err(e) = self.check_node(x) {
                     return e;
                 }
-                let root = *self.ds.find(&self.handles[x - 1]).value();
-                match self.component_data[&root].min_val() {
+                let Some(root) = self.root_value_for_index(x - 1) else {
+                    return StatusMessage::error("Could not resolve component root.");
+                };
+                match self.component_data.get(&root).and_then(ComponentData::min_val) {
                     Some(v) => {
                         self.output.push(v.to_string());
                         StatusMessage::info(format!("Min of component({x}): {v}"))
@@ -292,15 +328,20 @@ impl NetworkValueQueryState {
                 if let Err(e) = self.check_node(x) {
                     return e;
                 }
-                let root = *self.ds.find(&self.handles[x - 1]).value();
-                match self.component_data[&root].kth_val(k) {
+                let Some(root) = self.root_value_for_index(x - 1) else {
+                    return StatusMessage::error("Could not resolve component root.");
+                };
+                let Some(component) = self.component_data.get(&root) else {
+                    return StatusMessage::error("Component bookkeeping mismatch for kth query.");
+                };
+                match component.kth_val(k) {
                     Some(v) => {
                         self.output.push(v.to_string());
                         StatusMessage::info(format!("{k}-th smallest of component({x}): {v}"))
                     }
                     None => {
                         self.output.push("-1".to_string());
-                        let sz = self.component_data[&root].size();
+                        let sz = component.size();
                         StatusMessage::info(format!(
                             "Component({x}) has {sz} element(s); k={k} is out of range → -1"
                         ))
@@ -449,9 +490,12 @@ impl NetworkValueQueryState {
         }
 
         let mut comp_map: HashMap<usize, Vec<usize>> = HashMap::new();
-        for i in 0..self.n {
-            let root = *self.ds.find(&self.handles[i]).value();
-            comp_map.entry(root).or_default().push(i + 1);
+        for (root_id, member_values) in self.ds.components() {
+            let Some(root_value) = self.ds.root_value(root_id) else {
+                continue;
+            };
+            let members: Vec<usize> = member_values.into_iter().map(|member| member + 1).collect();
+            comp_map.insert(root_value, members);
         }
 
         let mut roots: Vec<usize> = comp_map.keys().copied().collect();
@@ -466,8 +510,12 @@ impl NetworkValueQueryState {
 
         let mut lines: Vec<Line> = Vec::new();
         for (idx, root) in roots.iter().enumerate() {
-            let members = &comp_map[root];
-            let data = &self.component_data[root];
+            let Some(members) = comp_map.get(root) else {
+                continue;
+            };
+            let Some(data) = self.component_data.get(root) else {
+                continue;
+            };
             let size = data.size();
             let min_str = data
                 .min_val()
@@ -544,5 +592,31 @@ impl CommandApplication for NetworkValueQueryState {
 impl Default for NetworkValueQueryState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NetworkValueQueryState;
+
+    #[test]
+    fn sample_min_then_union_does_not_panic_and_merges() {
+        let mut state = NetworkValueQueryState::new();
+
+        let _ = state.execute_command("sample");
+        let _ = state.execute_command("3 2");
+        let union_msg = state.execute_command("1 1 2");
+
+        assert!(
+            union_msg.text.contains("Merged components"),
+            "unexpected union message: {}",
+            union_msg.text
+        );
+        assert_eq!(state.component_data.len(), 4);
+
+        let _ = state.state_text();
+
+        let _ = state.execute_command("3 1");
+        assert_eq!(state.output.last().map(String::as_str), Some("3"));
     }
 }

@@ -1,3 +1,8 @@
 [workspace]
-members = ["packages/*"]
+members = ["packages/*", "xtask"]
 resolver = "2"
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

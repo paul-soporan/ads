@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 220 40% 10%;
+  --bg-elevated: 220 35% 15%;
+  --panel: 220 35% 20%;
+  --panel-border: 0 0% 100% / 0.08;
+  --text: 210 20% 98%;
+  --text-muted: 215 15% 65%;
+  --primary: 190 100% 50%;
+  --secondary: 280 80% 60%;
+  --success: 145 77% 46%;
+  --warning: 36 100% 56%;
+  --danger: 0 84% 63%;
+  --skeleton-base: 225 24% 24%;
+  --skeleton-shimmer: 200 100% 80%;
+
+  --variant-safe: 280 80% 60%;
+  --variant-raw: 320 80% 60%;
+  --variant-arena: 150 80% 50%;
+  --variant-std: 190 100% 50%;
+  --variant-other: 215 15% 45%;
+
+  --chart-grid: 215 28% 56% / 0.22;
+  --chart-grid-subtle: 215 28% 56% / 0.16;
+  --chart-axis: 210 24% 92%;
+  --chart-label: 210 26% 88%;
+
+  --bg-deep-1: 220 40% 10%;
+  --bg-deep-2: 220 35% 15%;
+  --bg-deep-3: 220 40% 10%;
+  --overlay-grid-line: 0 0% 100%;
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+}
+
+* {
+  border-color: hsl(var(--panel-border));
+}
+
+body {
+  @apply bg-bg text-text antialiased;
+  font-family: var(--font-outfit), sans-serif;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 14% 14%, hsl(var(--primary) / 0.14), transparent 34%),
+    linear-gradient(148deg, hsl(var(--bg-deep-1)), hsl(var(--bg-deep-2)) 42%, hsl(var(--bg-deep-3)));
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.08;
+  background-image: linear-gradient(0deg, transparent 24%, hsl(var(--overlay-grid-line) / 0.2) 25%, transparent 26%);
+  background-size: 100% 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

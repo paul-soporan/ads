@@ -1,4 +1,4 @@
-use ads::DisjointSet;
+use ads::contiguous::disjoint_set::safe::DisjointSet;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 
 use crate::applications::{CommandApplication, CommandApplicationLayout, parse_command_parts};
@@ -154,25 +154,32 @@ impl GraphUnionFindState {
         }
 
         let mut uf = DisjointSet::new();
-        let handles = (0..self.n).map(|i| uf.make_set(i)).collect::<Vec<_>>();
+        for i in 0..self.n {
+            uf.make_set(i);
+        }
         let mut cycle_edges = Vec::new();
 
         for &(u, v) in &self.edges {
-            if uf.same_set(&handles[u], &handles[v]) {
+            if uf.same_set(&u, &v) {
                 cycle_edges.push((u, v));
             } else {
-                uf.union(&handles[u], &handles[v]);
+                uf.union(&u, &v);
             }
         }
 
-        let parent_by_node: Vec<Option<usize>> = handles
-            .iter()
-            .map(|h| h.parent().map(|p| *p.value()))
+        let parent_by_node: Vec<Option<usize>> = (0..self.n)
+            .map(|value| {
+                uf.view(&value)
+                    .and_then(|view| view.parent_id().and_then(|pid| uf.root_value(pid)))
+            })
             .collect();
         let components: Vec<(usize, Vec<usize>)> = uf
             .components()
             .into_iter()
-            .map(|(root, members)| (*root.value(), members.iter().map(|m| *m.value()).collect()))
+            .map(|(root, members)| {
+                let root_value = uf.root_value(root).expect("root id should be valid");
+                (root_value, members)
+            })
             .collect();
 
         Some(GraphAnalysis {

@@ -1,11 +1,14 @@
-use ads::{BTree, BinarySearchTree, BinomialHeap, RedBlackTree};
+use ads::forests::binomial_heap::safe::BinomialHeap;
+use ads::traits::diagnostics::{ForestDiagnostics, TreeDiagnostics};
+use ads::trees::b_tree::safe::BTree;
+use ads::trees::binary_search_tree::safe::BinarySearchTree;
+use ads::trees::red_black_tree::safe::RedBlackTree;
 use ratatui::prelude::{Line, Text};
 use ratatui::widgets::ListItem;
 
 use crate::render::{
-    binomial_heap_degrees_str, binomial_heap_total, bst_depth, btree_depth, btree_key_count,
-    rb_black_height, rb_depth, render_binomial_heap_text, render_bst_tree_text, render_btree_text,
-    render_rb_tree_text,
+    binomial_heap_degrees_str, btree_key_count, rb_black_height, render_binomial_heap_text,
+    render_bst_tree_text, render_btree_text, render_rb_tree_text,
 };
 use crate::types::{Op, TreeKind};
 use crate::utils::format_option;
@@ -147,59 +150,57 @@ impl ShowcaseState {
         match self.kind {
             TreeKind::Bst => {
                 let tree = build_bst_showcase_tree(self.step);
-                let root = tree.root();
-                lines.push(Line::from(format!("Depth: {}", bst_depth(&root))));
-                lines.push(Line::from(format!("Nodes: {}", self.step)));
+                lines.push(Line::from(format!("Depth: {}", tree.height())));
+                lines.push(Line::from(format!("Nodes: {}", tree.node_count())));
                 lines.push(Line::from(format!(
                     "Min: {}",
-                    format_option(tree.min().map(|node| *node.value()))
+                    format_option(tree.min_cursor().map(|node| *node.key()))
                 )));
                 lines.push(Line::from(format!(
                     "Max: {}",
-                    format_option(tree.max().map(|node| *node.value()))
+                    format_option(tree.max_cursor().map(|node| *node.key()))
                 )));
             }
             TreeKind::Rb => {
                 let tree = build_rb_showcase_tree(self.step);
-                let root = tree.root();
-                lines.push(Line::from(format!("Depth: {}", rb_depth(&root))));
+                let root = tree.root_view();
+                lines.push(Line::from(format!("Depth: {}", tree.height())));
                 lines.push(Line::from(format!(
                     "Black height: {}",
                     rb_black_height(&root)
                 )));
                 lines.push(Line::from(format!(
                     "Min: {}",
-                    format_option(tree.min().map(|node| *node.value()))
+                    format_option(tree.min_cursor().map(|node| *node.key()))
                 )));
                 lines.push(Line::from(format!(
                     "Max: {}",
-                    format_option(tree.max().map(|node| *node.value()))
+                    format_option(tree.max_cursor().map(|node| *node.key()))
                 )));
             }
             TreeKind::BTree => {
                 let tree = build_btree_showcase_tree(self.step);
                 let root_view = tree.root_view();
                 lines.push(Line::from(format!("Degree (t): {}", tree.degree())));
-                lines.push(Line::from(format!("Height: {}", btree_depth(&root_view))));
+                lines.push(Line::from(format!("Height: {}", tree.height())));
+                lines.push(Line::from(format!("Physical nodes: {}", tree.node_count())));
                 lines.push(Line::from(format!(
                     "Total keys: {}",
                     btree_key_count(&root_view)
                 )));
                 lines.push(Line::from(format!(
                     "Min: {}",
-                    format_option(tree.min().map(|handle| *handle.value()))
+                    format_option(tree.min_cursor().map(|handle| *handle.key()))
                 )));
                 lines.push(Line::from(format!(
                     "Max: {}",
-                    format_option(tree.max().map(|handle| *handle.value()))
+                    format_option(tree.max_cursor().map(|handle| *handle.key()))
                 )));
             }
             TreeKind::BinomialHeap => {
                 let heap = build_binomial_showcase_heap(self.step);
-                lines.push(Line::from(format!(
-                    "Total elements: {}",
-                    binomial_heap_total(&heap)
-                )));
+                lines.push(Line::from(format!("Total elements: {}", heap.node_count())));
+                lines.push(Line::from(format!("Root trees: {}", heap.root_count())));
                 lines.push(Line::from(format!(
                     "Trees: {}",
                     binomial_heap_degrees_str(&heap)
@@ -252,13 +253,15 @@ impl ShowcaseState {
     }
 }
 
-pub fn build_bst_showcase_tree(step: usize) -> BinarySearchTree<i32> {
+pub fn build_bst_showcase_tree(step: usize) -> BinarySearchTree<i32, ()> {
     let mut tree = BinarySearchTree::new();
     for operation in BST_SHOWCASE_OPS.iter().take(step) {
         match operation {
-            Op::Insert(value) => tree.insert(*value),
+            Op::Insert(value) => {
+                let _ = tree.insert_entry(*value, ());
+            }
             Op::Delete(value) => {
-                let _ = tree.delete_value(value);
+                let _ = tree.remove_key(value);
             }
             Op::ExtractMin => {}
         }
@@ -266,13 +269,15 @@ pub fn build_bst_showcase_tree(step: usize) -> BinarySearchTree<i32> {
     tree
 }
 
-pub fn build_rb_showcase_tree(step: usize) -> RedBlackTree<i32> {
+pub fn build_rb_showcase_tree(step: usize) -> RedBlackTree<i32, ()> {
     let mut tree = RedBlackTree::new();
     for operation in RB_SHOWCASE_OPS.iter().take(step) {
         match operation {
-            Op::Insert(value) => tree.insert(*value),
+            Op::Insert(value) => {
+                let _ = tree.insert_entry(*value, ());
+            }
             Op::Delete(value) => {
-                let _ = tree.delete_value(value);
+                let _ = tree.remove_key(value);
             }
             Op::ExtractMin => {}
         }
@@ -280,13 +285,15 @@ pub fn build_rb_showcase_tree(step: usize) -> RedBlackTree<i32> {
     tree
 }
 
-pub fn build_btree_showcase_tree(step: usize) -> BTree<i32> {
-    let mut tree = BTree::new(2);
+pub fn build_btree_showcase_tree(step: usize) -> BTree<i32, (), 2> {
+    let mut tree = BTree::new();
     for operation in BTREE_SHOWCASE_OPS.iter().take(step) {
         match operation {
-            Op::Insert(value) => tree.insert(*value),
+            Op::Insert(value) => {
+                let _ = tree.insert_entry(*value, ());
+            }
             Op::Delete(value) => {
-                let _ = tree.delete_value(value);
+                let _ = tree.remove_key(value);
             }
             Op::ExtractMin => {}
         }

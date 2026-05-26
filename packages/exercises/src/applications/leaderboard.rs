@@ -1,4 +1,4 @@
-use ads::RedBlackTree;
+use ads::trees::red_black_tree::safe::RedBlackTree;
 use ratatui::prelude::{Color, Line, Span, Style, Text};
 use std::{
     cmp::Ordering,
@@ -100,7 +100,7 @@ impl LeaderboardCommand {
 }
 
 pub struct LeaderboardState {
-    pub tree: RedBlackTree<LeaderboardEntry>,
+    pub tree: RedBlackTree<LeaderboardEntry, ()>,
     pub scores: HashMap<String, i32>,
     pub output: Vec<String>,
     pub input: String,
@@ -136,7 +136,7 @@ impl LeaderboardState {
                     player: player.clone(),
                     score,
                 };
-                self.tree.insert(entry);
+                self.tree.insert_entry(entry, ());
                 self.scores.insert(player.clone(), score);
                 StatusMessage::success(format!("Added {player} with score {score}."))
             }
@@ -151,14 +151,14 @@ impl LeaderboardState {
                     player: player.clone(),
                     score: current_score,
                 };
-                let _ = self.tree.delete_value(&old_entry);
+                let _ = self.tree.remove_key(&old_entry);
 
                 let new_score = current_score + delta;
                 let new_entry = LeaderboardEntry {
                     player: player.clone(),
                     score: new_score,
                 };
-                self.tree.insert(new_entry);
+                self.tree.insert_entry(new_entry, ());
                 self.scores.insert(player.clone(), new_score);
 
                 StatusMessage::success(format!("Updated {player}: {current_score} -> {new_score}."))
@@ -174,7 +174,7 @@ impl LeaderboardState {
                     player: player.clone(),
                     score: current_score,
                 };
-                let _ = self.tree.delete_value(&old_entry);
+                let _ = self.tree.remove_key(&old_entry);
 
                 StatusMessage::success(format!("Removed {player} from the leaderboard."))
             }
@@ -194,16 +194,16 @@ impl LeaderboardState {
 
     fn top_k(&self, k: usize) -> Vec<String> {
         let mut result = Vec::new();
-        let mut current = self.tree.max();
+        let mut current = self.tree.max_cursor();
 
         while let Some(node) = current {
             if result.len() >= k {
                 break;
             }
 
-            let entry = node.value().clone();
+            let entry = node.key().clone();
             result.push(format!("{} {}", entry.player, entry.score));
-            current = self.tree.predecessor(&node);
+            current = node.predecessor();
         }
 
         result

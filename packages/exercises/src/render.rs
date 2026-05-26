@@ -1,7 +1,7 @@
-use ads::{
-    BTree, BTreeNodeView, BinarySearchTree, BinomialHeap, BinomialNodeView, BstNodeView, NodeColor,
-    RbNodeView, RedBlackTree,
-};
+use ads::forests::binomial_heap::safe::{BinomialHeap, BinomialNodeView};
+use ads::trees::b_tree::safe::{BTree, BTreeNodeView};
+use ads::trees::binary_search_tree::safe::{BinarySearchTree, BstNodeView};
+use ads::trees::red_black_tree::safe::{NodeColor, RbNodeView, RedBlackTree};
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 use std::{collections::BTreeMap, fmt::Display};
 
@@ -20,7 +20,7 @@ pub trait RenderNode {
     fn label(&self) -> NodeLabel;
 }
 
-impl RenderNode for BstNodeView<i32> {
+impl RenderNode for BstNodeView<i32, ()> {
     fn left_child(&self) -> Option<Self> {
         self.left()
     }
@@ -31,7 +31,7 @@ impl RenderNode for BstNodeView<i32> {
 
     fn label(&self) -> NodeLabel {
         NodeLabel {
-            text: self.value().to_string(),
+            text: self.key().to_string(),
             style: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -39,7 +39,7 @@ impl RenderNode for BstNodeView<i32> {
     }
 }
 
-impl<T> RenderNode for RbNodeView<T>
+impl<T> RenderNode for RbNodeView<T, ()>
 where
     T: Display,
 {
@@ -53,8 +53,8 @@ where
 
     fn label(&self) -> NodeLabel {
         let text = match self.color() {
-            NodeColor::Red => format!("{}(R)", self.value()),
-            NodeColor::Black => format!("{}(B)", self.value()),
+            NodeColor::Red => format!("{}(R)", self.key()),
+            NodeColor::Black => format!("{}(B)", self.key()),
         };
 
         let style = match self.color() {
@@ -179,19 +179,19 @@ fn render_tree_text<N: RenderNode>(root: &Option<N>) -> Text<'static> {
     canvas.into_text()
 }
 
-pub fn render_bst_tree_text(tree: &BinarySearchTree<i32>) -> Text<'static> {
-    render_tree_text(&tree.root())
+pub fn render_bst_tree_text(tree: &BinarySearchTree<i32, ()>) -> Text<'static> {
+    render_tree_text(&tree.root_view())
 }
 
-pub fn render_rb_tree_text(tree: &RedBlackTree<i32>) -> Text<'static> {
+pub fn render_rb_tree_text(tree: &RedBlackTree<i32, ()>) -> Text<'static> {
     render_rb_tree_text_generic(tree)
 }
 
-pub fn render_rb_tree_text_generic<T>(tree: &RedBlackTree<T>) -> Text<'static>
+pub fn render_rb_tree_text_generic<T>(tree: &RedBlackTree<T, ()>) -> Text<'static>
 where
     T: Ord + Display,
 {
-    render_tree_text(&tree.root())
+    render_tree_text(&tree.root_view())
 }
 
 fn layout_ds_subtree(
@@ -332,21 +332,7 @@ pub fn render_disjoint_set_forest_text(
     canvas.into_text()
 }
 
-pub fn bst_depth<T>(node: &Option<BstNodeView<T>>) -> usize {
-    match node {
-        Some(node) => 1 + usize::max(bst_depth(&node.left()), bst_depth(&node.right())),
-        None => 0,
-    }
-}
-
-pub fn rb_depth<T>(node: &Option<RbNodeView<T>>) -> usize {
-    match node {
-        Some(node) => 1 + usize::max(rb_depth(&node.left()), rb_depth(&node.right())),
-        None => 0,
-    }
-}
-
-pub fn rb_black_height<T>(node: &Option<RbNodeView<T>>) -> usize {
+pub fn rb_black_height<T>(node: &Option<RbNodeView<T, ()>>) -> usize {
     match node {
         Some(node) => {
             let left_height = rb_black_height(&node.left());
@@ -357,7 +343,7 @@ pub fn rb_black_height<T>(node: &Option<RbNodeView<T>>) -> usize {
 }
 
 fn build_btree_layout<T>(
-    view: &BTreeNodeView<T>,
+    view: &BTreeNodeView<T, ()>,
     level: usize,
     cursor_x: &mut usize,
     canvas: &mut TreeCanvas,
@@ -406,11 +392,11 @@ where
     center_x
 }
 
-pub fn render_btree_text(tree: &BTree<i32>) -> Text<'static> {
+pub fn render_btree_text(tree: &BTree<i32, (), 2>) -> Text<'static> {
     render_btree_text_generic(tree)
 }
 
-pub fn render_btree_text_generic<T>(tree: &BTree<T>) -> Text<'static>
+pub fn render_btree_text_generic<T, const D: usize>(tree: &BTree<T, (), D>) -> Text<'static>
 where
     T: Ord + Clone + std::fmt::Display,
 {
@@ -430,25 +416,7 @@ where
     }
 }
 
-pub fn btree_depth<T: Clone>(view: &Option<BTreeNodeView<T>>) -> usize {
-    match view {
-        None => 0,
-        Some(v) => {
-            if v.is_leaf() {
-                1
-            } else {
-                1 + v
-                    .children()
-                    .iter()
-                    .map(|c| btree_depth(&Some(c.clone())))
-                    .max()
-                    .unwrap_or(0)
-            }
-        }
-    }
-}
-
-pub fn btree_key_count<T: Clone>(view: &Option<BTreeNodeView<T>>) -> usize {
+pub fn btree_key_count<T: Clone>(view: &Option<BTreeNodeView<T, ()>>) -> usize {
     match view {
         None => 0,
         Some(v) => {
@@ -568,17 +536,6 @@ where
     }
 
     canvas.into_text()
-}
-
-pub fn binomial_heap_total<T: Ord>(heap: &BinomialHeap<T>) -> usize {
-    let mut total = 0usize;
-    let mut current = heap.head_view();
-    while let Some(node) = current {
-        total += 1usize << node.degree();
-        let next = node.sibling();
-        current = next;
-    }
-    total
 }
 
 pub fn binomial_heap_degrees_str<T: Ord>(heap: &BinomialHeap<T>) -> String {

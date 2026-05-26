@@ -2,3 +2,144 @@
 name = "ads"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+fastrand = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+dhat = "0.3"
+iai-callgrind = "0.16.1"
+rand = "0.8"
+rand_chacha = "0.3"
+
+[[bench]]
+name = "micro_maps_u64_criterion"
+path = "benches/micro/maps_u64_criterion.rs"
+harness = false
+
+[[bench]]
+name = "micro_maps_strings_criterion"
+path = "benches/micro/maps_strings_criterion.rs"
+harness = false
+
+[[bench]]
+name = "micro_maps_large_payload_criterion"
+path = "benches/micro/maps_large_payload_criterion.rs"
+harness = false
+
+[[bench]]
+name = "micro_sequences_criterion"
+path = "benches/micro/sequences.rs"
+harness = false
+
+[[bench]]
+name = "micro_heaps_criterion"
+path = "benches/micro/heaps.rs"
+harness = false
+
+[[bench]]
+name = "macro_read_heavy_criterion"
+path = "benches/macro/read_heavy.rs"
+harness = false
+
+[[bench]]
+name = "macro_write_heavy_criterion"
+path = "benches/macro/write_heavy.rs"
+harness = false
+
+[[bench]]
+name = "macro_thrashing_criterion"
+path = "benches/macro/thrashing.rs"
+harness = false
+
+[[bench]]
+name = "sweep_btree_cache_criterion"
+path = "benches/sweeps/btree_cache.rs"
+harness = false
+
+[[bench]]
+name = "sweep_hash_collisions_criterion"
+path = "benches/sweeps/hash_collisions.rs"
+harness = false
+
+[[bench]]
+name = "micro_maps_callgrind"
+path = "benches/callgrind/micro_maps_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "micro_sequences_callgrind"
+path = "benches/callgrind/micro_sequences_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "micro_heaps_callgrind"
+path = "benches/callgrind/micro_heaps_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "macro_read_heavy_callgrind"
+path = "benches/callgrind/macro_read_heavy_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "macro_write_heavy_callgrind"
+path = "benches/callgrind/macro_write_heavy_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "macro_thrashing_callgrind"
+path = "benches/callgrind/macro_thrashing_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "sweep_btree_cache_callgrind"
+path = "benches/callgrind/sweep_btree_cache_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "sweep_hash_collisions_callgrind"
+path = "benches/callgrind/sweep_hash_collisions_callgrind.rs"
+harness = false
+
+[[bench]]
+name = "micro_maps_dhat"
+path = "benches/memory/micro_maps_dhat.rs"
+harness = false
+
+[[bench]]
+name = "micro_sequences_dhat"
+path = "benches/memory/micro_sequences_dhat.rs"
+harness = false
+
+[[bench]]
+name = "micro_heaps_dhat"
+path = "benches/memory/micro_heaps_dhat.rs"
+harness = false
+
+[[bench]]
+name = "macro_read_heavy_dhat"
+path = "benches/memory/macro_read_heavy_dhat.rs"
+harness = false
+
+[[bench]]
+name = "macro_write_heavy_dhat"
+path = "benches/memory/macro_write_heavy_dhat.rs"
+harness = false
+
+[[bench]]
+name = "macro_thrashing_dhat"
+path = "benches/memory/macro_thrashing_dhat.rs"
+harness = false
+
+[[bench]]
+name = "sweep_btree_cache_dhat"
+path = "benches/memory/sweep_btree_cache_dhat.rs"
+harness = false
+
+[[bench]]
+name = "sweep_hash_collisions_dhat"
+path = "benches/memory/sweep_hash_collisions_dhat.rs"
+harness = false
+

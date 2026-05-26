@@ -1,4 +1,4 @@
-use ads::DisjointSet;
+use ads::contiguous::disjoint_set::safe::DisjointSet;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style, Text};
 
 use crate::applications::{CommandApplication, CommandApplicationLayout, parse_command_parts};
@@ -141,24 +141,31 @@ impl ProvinceCounterState {
         }
 
         let mut uf = DisjointSet::new();
-        let handles = (0..n).map(|i| uf.make_set(i)).collect::<Vec<_>>();
+        for i in 0..n {
+            uf.make_set(i);
+        }
 
         for i in 0..n {
             for j in (i + 1)..n {
                 if self.matrix[i][j] == 1 {
-                    uf.union(&handles[i], &handles[j]);
+                    uf.union(&i, &j);
                 }
             }
         }
 
-        let parent_by_node: Vec<Option<usize>> = handles
-            .iter()
-            .map(|h| h.parent().map(|p| *p.value()))
+        let parent_by_node: Vec<Option<usize>> = (0..n)
+            .map(|value| {
+                uf.view(&value)
+                    .and_then(|view| view.parent_id().and_then(|pid| uf.root_value(pid)))
+            })
             .collect();
         let provinces: Vec<(usize, Vec<usize>)> = uf
             .components()
             .into_iter()
-            .map(|(root, members)| (*root.value(), members.iter().map(|m| *m.value()).collect()))
+            .map(|(root, members)| {
+                let root_value = uf.root_value(root).expect("root id should be valid");
+                (root_value, members)
+            })
             .collect();
 
         Some(ProvinceAnalysis {
